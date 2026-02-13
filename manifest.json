@@ -3,7 +3,7 @@
   "name": "KORRIKA - 11 Eguneko Erronka",
   "short_name": "KORRIKA",
   "description": "Euskararen aldeko lasterketari buruzko galdetegi interaktiboa.",
-  "start_url": ".",
+  "start_url": "/",
   "display": "standalone",
   "background_color": "#e91e63",
   "theme_color": "#e91e63",
