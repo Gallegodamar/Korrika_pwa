@@ -5,10 +5,14 @@ import { supabase } from './supabase';
 import { GameState, Question, DailyProgress, UserAnswer, Player, PlayMode, QuizData } from './types';
 
 const STORAGE_KEY = 'korrika_quiz_progress_v6';
+const SIMULATION_STORAGE_KEY = 'korrika_simulation_mode';
+const GLOBAL_CONFIG_TABLE = 'korrika_app_config';
+const START_DATE_CONFIG_KEY = 'challenge_start_date';
 const DAYS_COUNT = 11;
 const QUESTIONS_PER_DAY = 12;
 const SECONDS_PER_QUESTION = 20;
-const CHALLENGE_START_DATE = '2026-02-14';
+const DEFAULT_CHALLENGE_START_DATE = '2026-02-14';
+const ADMIN_USERS = ['admin', 'k_admin'];
 
 const getLocalDateKey = (dateInput?: string | Date) => {
   const d = dateInput ? new Date(dateInput) : new Date();
@@ -69,6 +73,16 @@ const App: React.FC = () => {
   const [loadingEdukiak, setLoadingEdukiak] = useState(false);
   const [nowTs, setNowTs] = useState(() => Date.now());
   const [registeredPlayers, setRegisteredPlayers] = useState<string[]>([]);
+  const [reviewDayIndex, setReviewDayIndex] = useState<number | null>(null);
+  const [challengeStartDate, setChallengeStartDate] = useState(DEFAULT_CHALLENGE_START_DATE);
+  const [adminStartDateInput, setAdminStartDateInput] = useState(DEFAULT_CHALLENGE_START_DATE);
+  const [simulationEnabled, setSimulationEnabled] = useState(false);
+  const [simulationDayIndex, setSimulationDayIndex] = useState(0);
+  const [isSimulationRun, setIsSimulationRun] = useState(false);
+  const [sequentialSimulationActive, setSequentialSimulationActive] = useState(false);
+  const [sequentialSimulationDay, setSequentialSimulationDay] = useState(0);
+  const [sequentialSimulationProgress, setSequentialSimulationProgress] = useState<DailyProgress[]>([]);
+  const [savingAdminConfig, setSavingAdminConfig] = useState(false);
 
   // Multiplayer State
   const [players, setPlayers] = useState<Player[]>([]);
@@ -254,6 +268,31 @@ const App: React.FC = () => {
     }
   };
 
+  const fetchGlobalStartDate = async () => {
+    try {
+      const { data, error } = await supabase
+        .from(GLOBAL_CONFIG_TABLE)
+        .select('config_value')
+        .eq('config_key', START_DATE_CONFIG_KEY)
+        .maybeSingle();
+
+      if (error) throw error;
+
+      const rawValue = String((data as { config_value?: string } | null)?.config_value ?? '').trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(rawValue)) {
+        setChallengeStartDate(rawValue);
+        setAdminStartDateInput(rawValue);
+      } else {
+        setChallengeStartDate(DEFAULT_CHALLENGE_START_DATE);
+        setAdminStartDateInput(DEFAULT_CHALLENGE_START_DATE);
+      }
+    } catch (err) {
+      console.error('Error fetching global start date:', err);
+      setChallengeStartDate(DEFAULT_CHALLENGE_START_DATE);
+      setAdminStartDateInput(DEFAULT_CHALLENGE_START_DATE);
+    }
+  };
+
   useEffect(() => {
     const intervalId = setInterval(() => setNowTs(Date.now()), 1000);
     return () => clearInterval(intervalId);
@@ -263,6 +302,10 @@ const App: React.FC = () => {
     if (registeredPlayers.length === 0) return;
     void fetchLeaderboards();
   }, [registeredPlayers]);
+
+  useEffect(() => {
+    localStorage.setItem(SIMULATION_STORAGE_KEY, simulationEnabled ? '1' : '0');
+  }, [simulationEnabled]);
 
   useEffect(() => {
     const checkUser = async () => {
@@ -279,7 +322,11 @@ const App: React.FC = () => {
       }
     };
 
+    const storedSimulation = localStorage.getItem(SIMULATION_STORAGE_KEY);
+    if (storedSimulation === '1') setSimulationEnabled(true);
+
     checkUser();
+    fetchGlobalStartDate();
     fetchQuizData();
     fetchLeaderboards();
     fetchEdukiak();
@@ -289,6 +336,7 @@ const App: React.FC = () => {
       setUser(session?.user ?? null);
       if (session?.user) {
         setGameState(GameState.HOME);
+        void fetchGlobalStartDate();
         void fetchRegisteredPlayers();
         void fetchLeaderboards();
       } else {
@@ -342,32 +390,45 @@ const App: React.FC = () => {
     setUser(null);
     setGameState(GameState.AUTH);
     setPlayers([]);
+    setReviewDayIndex(null);
+    setSequentialSimulationActive(false);
+    setSequentialSimulationDay(0);
+    setSequentialSimulationProgress([]);
   };
 
-  const nextAvailableDay = useMemo(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+  const simulationToday = useMemo(() => {
+    if (!sequentialSimulationActive) return null;
+    const d = new Date(`${challengeStartDate}T00:00:00`);
+    d.setDate(d.getDate() + sequentialSimulationDay);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }, [sequentialSimulationActive, sequentialSimulationDay, challengeStartDate]);
 
-    const start = new Date(`${CHALLENGE_START_DATE}T00:00:00`);
+  const nextAvailableDay = useMemo(() => {
+    const today = simulationToday ? new Date(simulationToday) : new Date();
+    today.setHours(0, 0, 0, 0);
+    const sourceProgress = sequentialSimulationActive ? sequentialSimulationProgress : progress;
+
+    const start = new Date(`${challengeStartDate}T00:00:00`);
     const todayIndex = Math.floor((today.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
 
     if (todayIndex < 0) return -4;
     if (todayIndex >= DAYS_COUNT) return -5;
 
     for (let i = 0; i < DAYS_COUNT; i++) {
-      const day = progress[i];
+      const day = sourceProgress[i];
       if (day?.completed) continue;
       if (i > todayIndex) return -1;
       if (i === 0) return i;
-      const prevDay = progress[i - 1];
+      const prevDay = sourceProgress[i - 1];
       if (!prevDay?.completed) return -1;
       const lastDate = getLocalDateKey(prevDay.date);
-      const todayDate = getLocalDateKey();
+      const todayDate = getLocalDateKey(today);
       if (lastDate === todayDate) return -2;
       return i;
     }
     return -3;
-  }, [progress]);
+  }, [progress, challengeStartDate, simulationToday, sequentialSimulationActive, sequentialSimulationProgress]);
 
   const generateQuestions = useCallback((mode: PlayMode, idx: number) => {
     if (quizData.length === 0) return [];
@@ -463,7 +524,20 @@ const App: React.FC = () => {
     const isMulti = finalPlayers.length > 1;
     const finalScore = isMulti ? Math.max(...finalPlayers.map(p => p.score)) : finalPlayers[0].score;
     
-    if (playMode === 'DAILY') {
+    if (playMode === 'DAILY' && sequentialSimulationActive) {
+      const newDailyProgress: DailyProgress = {
+        dayIndex,
+        score: finalScore,
+        completed: true,
+        date: new Date().toISOString(),
+        answers: finalPlayers[0].answers,
+        players: isMulti ? finalPlayers : undefined
+      };
+
+      const updatedSimProgress = [...sequentialSimulationProgress];
+      updatedSimProgress[dayIndex] = newDailyProgress;
+      setSequentialSimulationProgress(updatedSimProgress);
+    } else if (playMode === 'DAILY' && !isSimulationRun) {
       const newDailyProgress: DailyProgress = {
         dayIndex,
         score: finalScore,
@@ -479,9 +553,17 @@ const App: React.FC = () => {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedProgress));
     }
 
-    await persistGameResults(finalPlayers);
-    await fetchLeaderboards();
+    if (!isSimulationRun && !sequentialSimulationActive) {
+      await persistGameResults(finalPlayers);
+      await fetchLeaderboards();
+    }
     
+    setReviewDayIndex(null);
+    if (sequentialSimulationActive) {
+      setSequentialSimulationDay((prev) => Math.min(prev + 1, DAYS_COUNT));
+      setGameState(GameState.HOME);
+      return;
+    }
     setGameState(isMulti ? GameState.RANKING : GameState.RESULTS);
   };
 
@@ -515,6 +597,8 @@ const App: React.FC = () => {
     const idx = type === 'DAILY' ? nextAvailableDay : 0;
     if (type === 'DAILY' && idx < 0) return;
     
+    setReviewDayIndex(null);
+    setIsSimulationRun(sequentialSimulationActive ? type === 'DAILY' : false);
     setPlayMode(type);
     setDayIndex(idx);
     const qs = generateQuestions(type, idx);
@@ -534,8 +618,95 @@ const App: React.FC = () => {
     }
   };
 
-  const getResultFeedback = (score: number) => {
-    const total = activeQuestions.length || 12;
+  const saveChallengeStartDate = async () => {
+    if (!isAdmin) return;
+    const value = adminStartDateInput.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return;
+    try {
+      setSavingAdminConfig(true);
+      const { error } = await supabase
+        .from(GLOBAL_CONFIG_TABLE)
+        .upsert(
+          {
+            config_key: START_DATE_CONFIG_KEY,
+            config_value: value
+          },
+          { onConflict: 'config_key' }
+        );
+      if (error) throw error;
+      setChallengeStartDate(value);
+    } catch (err) {
+      console.error('Error saving global start date:', err);
+    } finally {
+      setSavingAdminConfig(false);
+    }
+  };
+
+  const resetChallengeStartDate = async () => {
+    if (!isAdmin) return;
+    try {
+      setSavingAdminConfig(true);
+      const { error } = await supabase
+        .from(GLOBAL_CONFIG_TABLE)
+        .upsert(
+          {
+            config_key: START_DATE_CONFIG_KEY,
+            config_value: DEFAULT_CHALLENGE_START_DATE
+          },
+          { onConflict: 'config_key' }
+        );
+      if (error) throw error;
+      setChallengeStartDate(DEFAULT_CHALLENGE_START_DATE);
+      setAdminStartDateInput(DEFAULT_CHALLENGE_START_DATE);
+    } catch (err) {
+      console.error('Error resetting global start date:', err);
+    } finally {
+      setSavingAdminConfig(false);
+    }
+  };
+
+  const startSimulationDay = (idx: number) => {
+    if (!isAdmin) return;
+    const clampedIdx = Math.min(Math.max(idx, 0), DAYS_COUNT - 1);
+    const qs = generateQuestions('DAILY', clampedIdx);
+    if (qs.length === 0) return;
+
+    setReviewDayIndex(null);
+    setIsSimulationRun(true);
+    setPlayMode('DAILY');
+    setDayIndex(clampedIdx);
+    setActiveQuestions(qs);
+
+    const simPlayerName = userDisplayName || 'SIMULAZIOA';
+    setPlayers([{ name: simPlayerName, score: 0, answers: [] }]);
+    setCurrentPlayerIdx(0);
+    setCurrentQuestionIdx(0);
+    setTimer(SECONDS_PER_QUESTION);
+    setCountdown(3);
+    setGameState(GameState.COUNTDOWN);
+  };
+
+  const startSequentialSimulation = () => {
+    if (!isAdmin) return;
+    setSequentialSimulationActive(true);
+    setSequentialSimulationDay(0);
+    setSequentialSimulationProgress([]);
+    setIsSimulationRun(false);
+    setReviewDayIndex(null);
+    setGameState(GameState.HOME);
+  };
+
+  const stopSequentialSimulation = () => {
+    if (!isAdmin) return;
+    setSequentialSimulationActive(false);
+    setSequentialSimulationDay(0);
+    setSequentialSimulationProgress([]);
+    setIsSimulationRun(false);
+    setReviewDayIndex(null);
+  };
+
+  const getResultFeedback = (score: number, totalQuestions: number) => {
+    const total = totalQuestions || QUESTIONS_PER_DAY;
     if (score === total) return { text: "Zuzenean lekukoa hartzera!", emoji: "👑" };
     if (score >= total * 0.8) return { text: "Oso ondo! Bihar gehiago.", emoji: "🏃‍♂️" };
     if (score >= total * 0.5) return { text: "Ertaina. Jarraitu trebatzen.", emoji: "🤝" };
@@ -548,20 +719,31 @@ const App: React.FC = () => {
   }, [supervisorCategory, quizData]);
 
   const userDisplayName = (user?.email?.split('@')[0] || 'Gonbidatua').toUpperCase();
+  const isAdmin = ADMIN_USERS.includes((user?.email?.split('@')[0] || '').toLowerCase());
   const activeRanking = leaderboardView === 'DAILY' ? dailyRanking : generalRanking;
-  const challengeStartTs = useMemo(() => new Date(`${CHALLENGE_START_DATE}T00:00:00`).getTime(), []);
-  const timeUntilStart = Math.max(0, challengeStartTs - nowTs);
+  const challengeStartTs = useMemo(() => new Date(`${challengeStartDate}T00:00:00`).getTime(), [challengeStartDate]);
+  const effectiveNowTs = simulationToday ? simulationToday.getTime() : nowTs;
+  const timeUntilStart = Math.max(0, challengeStartTs - effectiveNowTs);
   const activeEdukia = useMemo(() => {
     if (edukiak.length === 0) return null;
 
-    const today = new Date();
+    const today = simulationToday ? new Date(simulationToday) : new Date();
     today.setHours(0, 0, 0, 0);
-    const start = new Date(`${CHALLENGE_START_DATE}T00:00:00`);
+    const start = new Date(`${challengeStartDate}T00:00:00`);
     const elapsedDays = Math.floor((today.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
     const targetDay = elapsedDays < 0 ? 0 : Math.min(elapsedDays + 1, DAYS_COUNT);
 
     return edukiak.find((item) => item.day === targetDay) ?? null;
-  }, [edukiak]);
+  }, [edukiak, challengeStartDate, simulationToday]);
+  const completedDayIndexes = useMemo(
+    () => progress.map((day, idx) => (day?.completed ? idx : -1)).filter((idx) => idx >= 0),
+    [progress]
+  );
+  const reviewedDay = reviewDayIndex !== null ? progress[reviewDayIndex] : undefined;
+  const resultsAnswers = reviewedDay?.answers ?? (players[0]?.answers ?? []);
+  const resultsScore = reviewedDay?.score ?? (players[0]?.score ?? 0);
+  const resultsTotal = Math.max(resultsAnswers.length, 1);
+  const resultsFeedback = getResultFeedback(resultsScore, resultsTotal);
 
   if ((loadingAuth || loadingData) && (gameState === GameState.AUTH || gameState === GameState.HOME)) {
     return (
@@ -674,6 +856,96 @@ const App: React.FC = () => {
                 </div>
               </section>
 
+              {isAdmin && (
+                <section className="w-full px-4">
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50/60 shadow-sm p-4 space-y-3">
+                    <p className="text-[10px] font-black uppercase tracking-[0.15em] text-amber-700">Admin panela</p>
+
+                    <div className="rounded-xl bg-white border border-amber-100 p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[10px] font-black uppercase text-amber-700">Simulazio sekuentziala</p>
+                        <span className={`text-[10px] font-black uppercase ${sequentialSimulationActive ? 'text-emerald-700' : 'text-gray-500'}`}>
+                          {sequentialSimulationActive ? `Eguna ${Math.min(sequentialSimulationDay + 1, DAYS_COUNT)}` : 'Itzalita'}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          onClick={startSequentialSimulation}
+                          className="rounded-xl bg-emerald-600 text-white px-3 py-2 text-[10px] font-black uppercase"
+                        >
+                          Hasi simulazioa
+                        </button>
+                        <button
+                          onClick={stopSequentialSimulation}
+                          className="rounded-xl bg-white border border-amber-200 text-amber-700 px-3 py-2 text-[10px] font-black uppercase"
+                        >
+                          Gelditu
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-[1fr_auto_auto] gap-2 items-center">
+                      <input
+                        type="date"
+                        value={adminStartDateInput}
+                        onChange={(e) => setAdminStartDateInput(e.target.value)}
+                        className="bg-white border border-amber-200 rounded-xl px-3 py-2 text-[11px] font-bold text-gray-700 outline-none"
+                      />
+                      <button
+                        onClick={() => void saveChallengeStartDate()}
+                        disabled={savingAdminConfig}
+                        className="rounded-xl bg-amber-500 text-white px-3 py-2 text-[10px] font-black uppercase disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {savingAdminConfig ? 'Gordetzen...' : 'Gorde'}
+                      </button>
+                      <button
+                        onClick={() => void resetChallengeStartDate()}
+                        disabled={savingAdminConfig}
+                        className="rounded-xl bg-white border border-amber-200 text-amber-700 px-3 py-2 text-[10px] font-black uppercase disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        Berrezarri
+                      </button>
+                    </div>
+
+                    <div className="rounded-xl bg-white border border-amber-100 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-[10px] font-black uppercase text-amber-700">Simulazioa</p>
+                        <button
+                          onClick={() => setSimulationEnabled((prev) => !prev)}
+                          className={`rounded-full px-3 py-1 text-[10px] font-black uppercase ${
+                            simulationEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'
+                          }`}
+                        >
+                          {simulationEnabled ? 'Aktibatuta' : 'Desaktibatuta'}
+                        </button>
+                      </div>
+
+                      {simulationEnabled && (
+                        <div className="mt-2 grid grid-cols-[1fr_auto] gap-2">
+                          <select
+                            value={simulationDayIndex}
+                            onChange={(e) => setSimulationDayIndex(Number(e.target.value))}
+                            className="bg-white border border-amber-200 rounded-xl px-3 py-2 text-[11px] font-bold text-gray-700 outline-none"
+                          >
+                            {Array.from({ length: DAYS_COUNT }).map((_, i) => (
+                              <option key={`sim-day-${i}`} value={i}>
+                                {i + 1}. eguna
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={() => startSimulationDay(simulationDayIndex)}
+                            className="rounded-xl bg-gray-800 text-white px-3 py-2 text-[10px] font-black uppercase"
+                          >
+                            Probatu
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </section>
+              )}
+
               {nextAvailableDay >= 0 || nextAvailableDay === -4 ? (
                 <div className="flex flex-col gap-3 w-full px-8">
                   <button
@@ -689,7 +961,13 @@ const App: React.FC = () => {
               ) : (
                 <div className="bg-white px-8 py-4 rounded-3xl shadow-md border border-gray-100 flex flex-col items-center text-center gap-2 w-full max-w-xs mx-auto">
                   <div className="text-3xl">
-                    {nextAvailableDay === -4 ? '📅' : nextAvailableDay === -1 ? '🔒' : nextAvailableDay === -2 ? '⏳' : '🏁'}
+                    {nextAvailableDay === -4
+                      ? '📅'
+                      : nextAvailableDay === -1
+                        ? '🔒'
+                        : nextAvailableDay === -2
+                          ? '⏳'
+                          : '👏'}
                   </div>
                   <h2 className="text-sm font-black uppercase italic text-gray-800">
                     {nextAvailableDay === -4
@@ -698,9 +976,36 @@ const App: React.FC = () => {
                         ? 'Bihar saiatu'
                         : nextAvailableDay === -2
                           ? 'Bihar arte!'
-                          : 'Erronka Bukatuta!'}
+                          : 'Erronka Amaituta'}
                   </h2>
+                  {(nextAvailableDay === -3 || nextAvailableDay === -5) && (
+                    <p className="text-[10px] font-bold text-gray-500">Eskerrik asko parte hartzeagatik.</p>
+                  )}
                 </div>
+              )}
+
+              {completedDayIndexes.length > 0 && (
+                <section className="w-full px-4">
+                  <div className="rounded-2xl border border-gray-200 bg-white shadow-sm p-4">
+                    <p className="text-[10px] font-black uppercase tracking-[0.15em] text-gray-500 mb-2">
+                      Aurreko egunetako emaitzak
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {completedDayIndexes.map((idx) => (
+                        <button
+                          key={`review-day-${idx}`}
+                          onClick={() => {
+                            setReviewDayIndex(idx);
+                            setGameState(GameState.RESULTS);
+                          }}
+                          className="rounded-full border border-pink-200 bg-pink-50 px-3 py-1.5 text-[10px] font-black uppercase text-pink-700 hover:bg-pink-100 transition-colors"
+                        >
+                          {idx + 1}. eguna
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </section>
               )}
             </div>
 
@@ -892,30 +1197,40 @@ const App: React.FC = () => {
             <div className="rounded-[2rem] p-5 text-white shadow-xl korrika-bg-gradient">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/80">Azken Emaitza</p>
-                  <h2 className="text-2xl font-black italic mt-1">{getResultFeedback(players[0].score).text}</h2>
+                  <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/80">
+                    {isSimulationRun
+                      ? 'Simulazio emaitza'
+                      : reviewDayIndex !== null
+                        ? `${reviewDayIndex + 1}. eguneko emaitza`
+                        : 'Azken Emaitza'}
+                  </p>
+                  <h2 className="text-2xl font-black italic mt-1">{resultsFeedback.text}</h2>
                 </div>
-                <div className="text-5xl leading-none">{getResultFeedback(players[0].score).emoji}</div>
+                <div className="text-5xl leading-none">{resultsFeedback.emoji}</div>
               </div>
               <div className="mt-5 bg-white/20 rounded-2xl p-4 backdrop-blur-sm border border-white/20">
                 <div className="flex items-end justify-between">
                   <p className="text-4xl font-black">
-                    {players[0].score}
-                    <span className="text-lg font-bold text-white/80"> / {activeQuestions.length}</span>
+                    {resultsScore}
+                    <span className="text-lg font-bold text-white/80"> / {resultsTotal}</span>
                   </p>
                   <p className="text-xs uppercase font-black tracking-widest text-white/80">
-                    {Math.round(((players[0].score || 0) / Math.max(activeQuestions.length, 1)) * 100)}% asmatuak
+                    {Math.round(((resultsScore || 0) / Math.max(resultsTotal, 1)) * 100)}% asmatuak
                   </p>
                 </div>
                 <div className="mt-3 h-2 rounded-full bg-white/25 overflow-hidden">
                   <div
                     className="h-full bg-white rounded-full transition-all"
-                    style={{ width: `${((players[0].score || 0) / Math.max(activeQuestions.length, 1)) * 100}%` }}
+                    style={{ width: `${((resultsScore || 0) / Math.max(resultsTotal, 1)) * 100}%` }}
                   />
                 </div>
               </div>
               <button
-                onClick={() => setGameState(GameState.HOME)}
+                onClick={() => {
+                  setReviewDayIndex(null);
+                  setIsSimulationRun(false);
+                  setGameState(GameState.HOME);
+                }}
                 className="mt-5 w-full bg-white text-pink-600 py-3 rounded-2xl font-black uppercase text-xs shadow-md active:scale-95 transition-all"
               >
                 Itzuli
@@ -926,11 +1241,11 @@ const App: React.FC = () => {
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-black uppercase tracking-wide text-gray-700">Erantzunen Xehetasuna</h3>
                 <span className="text-[10px] font-black uppercase text-gray-400">
-                  {(players[0]?.answers ?? []).length} galdera
+                  {resultsAnswers.length} galdera
                 </span>
               </div>
               <div className="space-y-3">
-                {(players[0]?.answers ?? []).map((answer, idx) => {
+                {resultsAnswers.map((answer, idx) => {
                   const selectedKey = answer.selectedOption;
                   const correctKey = answer.question.respuesta_correcta;
                   const selectedText = selectedKey ? answer.question.opciones[selectedKey] : null;
