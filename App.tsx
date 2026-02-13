@@ -701,7 +701,7 @@ const App: React.FC = () => {
                           : 'Erronka Bukatuta!'}
                   </h2>
                 </div>
-              )
+              )}
             </div>
 
             <section className="w-full px-4">
