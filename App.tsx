@@ -91,6 +91,8 @@ const App: React.FC = () => {
   const [sequentialSimulationDay, setSequentialSimulationDay] = useState(0);
   const [sequentialSimulationProgress, setSequentialSimulationProgress] = useState<DailyProgress[]>([]);
   const [savingAdminConfig, setSavingAdminConfig] = useState(false);
+  const [dailyPlayLockMessage, setDailyPlayLockMessage] = useState<string | null>(null);
+  const [validatingDailyStart, setValidatingDailyStart] = useState(false);
 
   // Multiplayer State
   const [players, setPlayers] = useState<Player[]>([]);
@@ -338,11 +340,14 @@ const App: React.FC = () => {
       setUser(session?.user ?? null);
       if (session?.user) {
         setGameState(GameState.HOME);
+        setDailyPlayLockMessage(null);
         void fetchGlobalStartDate();
         void fetchRegisteredPlayers();
         void fetchLeaderboards();
       } else {
         setGameState(GameState.AUTH);
+        setDailyPlayLockMessage(null);
+        setValidatingDailyStart(false);
         setLeaderboardRows([]);
         setDailyRanking([]);
         setGeneralRanking([]);
@@ -378,6 +383,7 @@ const App: React.FC = () => {
       
       if (data.user) {
         setUser(data.user);
+        setDailyPlayLockMessage(null);
         setGameState(GameState.HOME);
       }
     } catch (err: any) {
@@ -393,6 +399,8 @@ const App: React.FC = () => {
     setUser(null);
     setGameState(GameState.AUTH);
     setPlayers([]);
+    setDailyPlayLockMessage(null);
+    setValidatingDailyStart(false);
     setLeaderboardRows([]);
     setDailyRanking([]);
     setGeneralRanking([]);
@@ -479,6 +487,25 @@ const App: React.FC = () => {
     }
   }, [quizData]);
 
+  const hasPlayedDailyOnServer = useCallback(async (targetDayIndex: number) => {
+    if (!user) return false;
+
+    const { data, error } = await supabase
+      .from('game_results')
+      .select('day_index')
+      .eq('user_id', user.id)
+      .eq('play_mode', 'DAILY')
+      .eq('day_index', targetDayIndex)
+      .limit(1);
+
+    if (error) {
+      console.error('Error checking daily play lock:', error);
+      return false;
+    }
+
+    return (data?.length ?? 0) > 0;
+  }, [user]);
+
   const handleNextQuestion = useCallback((selectedOption: string | null) => {
     if (activeQuestions.length === 0) return;
 
@@ -509,6 +536,14 @@ const App: React.FC = () => {
 
   const persistGameResults = async (finalPlayers: Player[]) => {
     if (!user) return;
+
+    if (playMode === 'DAILY') {
+      const alreadyPlayed = await hasPlayedDailyOnServer(dayIndex);
+      if (alreadyPlayed) {
+        setDailyPlayLockMessage(`Ya has jugado el día ${dayIndex + 1}. Solo se permite una partida diaria por cuenta.`);
+        return;
+      }
+    }
 
     const playedAt = new Date().toISOString();
     const rows = finalPlayers.map((player) => {
@@ -541,6 +576,9 @@ const App: React.FC = () => {
 
     const { error } = await supabase.from('game_results').insert(rows);
     if (error) {
+      if ((error as any).code === '23505' && playMode === 'DAILY') {
+        setDailyPlayLockMessage(`Ya has jugado el día ${dayIndex + 1}. Solo se permite una partida diaria por cuenta.`);
+      }
       console.error("Error saving game results:", error);
     }
   };
@@ -618,10 +656,26 @@ const App: React.FC = () => {
     }
   }, [gameState, countdown]);
 
-  const initGame = (mode: 'SOLO' | 'COMP', type: PlayMode) => {
+  const initGame = async (mode: 'SOLO' | 'COMP', type: PlayMode) => {
     const idx = type === 'DAILY' ? nextAvailableDay : 0;
     if (type === 'DAILY' && idx < 0) return;
     
+    setDailyPlayLockMessage(null);
+
+    if (type === 'DAILY' && !isSimulationRun && !sequentialSimulationActive) {
+      setValidatingDailyStart(true);
+      try {
+        const alreadyPlayed = await hasPlayedDailyOnServer(idx);
+        if (alreadyPlayed) {
+          setDailyPlayLockMessage(`Ya has jugado el día ${idx + 1}. Solo se permite una partida diaria por cuenta.`);
+          await fetchLeaderboards();
+          return;
+        }
+      } finally {
+        setValidatingDailyStart(false);
+      }
+    }
+
     setReviewDayIndex(null);
     setIsSimulationRun(sequentialSimulationActive ? type === 'DAILY' : false);
     setPlayMode(type);
@@ -974,14 +1028,21 @@ const App: React.FC = () => {
               {nextAvailableDay >= 0 || nextAvailableDay === -4 ? (
                 <div className="flex flex-col gap-3 w-full px-8">
                   <button
-                    onClick={() => initGame('SOLO', 'DAILY')}
-                    disabled={nextAvailableDay === -4}
+                    onClick={() => void initGame('SOLO', 'DAILY')}
+                    disabled={nextAvailableDay === -4 || validatingDailyStart}
                     className="korrika-bg-gradient text-white py-4 rounded-2xl font-black text-lg uppercase italic shadow-lg hover:scale-[1.02] transition-all active:scale-95 border-2 border-white/20 disabled:opacity-70 disabled:scale-100 disabled:cursor-not-allowed"
                   >
-                    {nextAvailableDay === -4
+                    {validatingDailyStart
+                      ? 'Egiaztatzen...'
+                      : nextAvailableDay === -4
                       ? `Jolastu aktibatuko da: ${formatCountdown(timeUntilStart)}`
                       : `Jolastu (${nextAvailableDay + 1}. Eguna)`}
                   </button>
+                  {dailyPlayLockMessage && (
+                    <p className="text-[10px] font-bold text-red-500 text-center bg-red-50 border border-red-100 rounded-xl px-3 py-2">
+                      {dailyPlayLockMessage}
+                    </p>
+                  )}
                 </div>
               ) : (
                 <div className="bg-white px-8 py-4 rounded-3xl shadow-md border border-gray-100 flex flex-col items-center text-center gap-2 w-full max-w-xs mx-auto">
@@ -1198,13 +1259,13 @@ const App: React.FC = () => {
              </div>
              <div className="flex-1 bg-white rounded-3xl p-6 shadow-xl border border-gray-100 flex flex-col min-h-0">
                 <div className="mb-4">
-                  <h3 className="text-base font-bold text-gray-800 italic">"{activeQuestions[currentQuestionIdx].pregunta}"</h3>
+                  <h3 className="text-lg font-bold text-gray-800 italic">"{activeQuestions[currentQuestionIdx].pregunta}"</h3>
                 </div>
                 <div className="flex-1 grid grid-rows-4 gap-2">
                   {Object.entries(activeQuestions[currentQuestionIdx].opciones).map(([key, value]) => (
                     <button key={key} onClick={() => handleNextQuestion(key)} className="w-full text-left px-4 py-3 rounded-xl border-2 border-gray-100 active:scale-95 transition-all flex items-center gap-3">
-                      <span className="w-8 h-8 rounded bg-gray-100 flex items-center justify-center font-black text-gray-400 text-xs">{key.toUpperCase()}</span>
-                      <span className="font-bold text-gray-700 text-sm">{value}</span>
+                      <span className="w-9 h-9 rounded bg-gray-100 flex items-center justify-center font-black text-gray-400 text-sm">{key.toUpperCase()}</span>
+                      <span className="font-bold text-gray-700 text-base">{value}</span>
                     </button>
                   ))}
                 </div>
@@ -1285,8 +1346,8 @@ const App: React.FC = () => {
 
             <div className="bg-white rounded-[1.75rem] p-4 shadow-md border border-gray-100">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-black uppercase tracking-wide text-gray-700">Erantzunen Xehetasuna</h3>
-                <span className="text-[10px] font-black uppercase text-gray-400">
+                <h3 className="text-base font-black uppercase tracking-wide text-gray-700">Erantzunen Xehetasuna</h3>
+                <span className="text-xs font-black uppercase text-gray-400">
                   {resultsAnswers.length} galdera
                 </span>
               </div>
@@ -1307,11 +1368,11 @@ const App: React.FC = () => {
                       }`}
                     >
                       <div className="flex items-start justify-between gap-3 mb-2">
-                        <p className="text-[11px] font-black text-gray-700 leading-snug">
+                        <p className="text-[13px] font-black text-gray-700 leading-snug">
                           {idx + 1}. {answer.question.pregunta}
                         </p>
                         <span
-                          className={`text-[10px] font-black uppercase px-2 py-1 rounded-full whitespace-nowrap ${
+                          className={`text-[11px] font-black uppercase px-2 py-1 rounded-full whitespace-nowrap ${
                             answer.isCorrect
                               ? 'bg-emerald-100 text-emerald-700'
                               : 'bg-rose-100 text-rose-700'
@@ -1323,14 +1384,14 @@ const App: React.FC = () => {
 
                       <div className="grid gap-2">
                         <div className="rounded-xl border border-gray-100 bg-white px-3 py-2">
-                          <p className="text-[9px] font-black uppercase text-gray-400 mb-1">Zure aukera</p>
-                          <p className={`text-[11px] font-bold ${answer.isCorrect ? 'text-emerald-700' : 'text-rose-700'}`}>
+                          <p className="text-[10px] font-black uppercase text-gray-400 mb-1">Zure aukera</p>
+                          <p className={`text-[13px] font-bold ${answer.isCorrect ? 'text-emerald-700' : 'text-rose-700'}`}>
                             {selectedKey ? `${selectedKey.toUpperCase()}) ${selectedText}` : 'Erantzun gabe'}
                           </p>
                         </div>
                         <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2">
-                          <p className="text-[9px] font-black uppercase text-emerald-600/70 mb-1">Erantzun zuzena</p>
-                          <p className="text-[11px] font-black text-emerald-700">
+                          <p className="text-[10px] font-black uppercase text-emerald-600/70 mb-1">Erantzun zuzena</p>
+                          <p className="text-[13px] font-black text-emerald-700">
                             {`${correctKey.toUpperCase()}) ${correctText}`}
                           </p>
                         </div>
