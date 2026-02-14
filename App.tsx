@@ -35,6 +35,12 @@ type RankingEntry = {
   points: number;
   games: number;
 };
+type GameResultRow = {
+  player_name: string | null;
+  correct_answers: number | null;
+  played_at: string | null;
+  day_index: number | null;
+};
 type LeaderboardView = 'DAILY' | 'GENERAL';
 type KorrikaEdukia = {
   day: number;
@@ -67,8 +73,10 @@ const App: React.FC = () => {
   const [activeQuestions, setActiveQuestions] = useState<Question[]>([]);
   const [dailyRanking, setDailyRanking] = useState<RankingEntry[]>([]);
   const [generalRanking, setGeneralRanking] = useState<RankingEntry[]>([]);
+  const [leaderboardRows, setLeaderboardRows] = useState<GameResultRow[]>([]);
   const [loadingRanking, setLoadingRanking] = useState(false);
   const [leaderboardView, setLeaderboardView] = useState<LeaderboardView>('DAILY');
+  const [selectedDailyLeaderboardDay, setSelectedDailyLeaderboardDay] = useState<number>(0);
   const [edukiak, setEdukiak] = useState<KorrikaEdukia[]>([]);
   const [loadingEdukiak, setLoadingEdukiak] = useState(false);
   const [nowTs, setNowTs] = useState(() => Date.now());
@@ -172,26 +180,20 @@ const App: React.FC = () => {
       setLoadingRanking(true);
       const { data, error } = await supabase
         .from('game_results')
-        .select('player_name, correct_answers, played_at')
+        .select('player_name, correct_answers, played_at, day_index')
         .order('played_at', { ascending: false })
         .limit(5000);
 
       if (error) throw error;
 
-      const rows = (data ?? []) as Array<{
-        player_name: string | null;
-        correct_answers: number | null;
-        played_at: string | null;
-      }>;
-
-      const todayKey = getLocalDateKey();
-      const dailyRows = rows.filter((row) => row.played_at && getLocalDateKey(row.played_at) === todayKey);
+      const rows = (data ?? []) as GameResultRow[];
+      setLeaderboardRows(rows);
 
       const basePlayers = [...new Set([...registeredPlayers, userDisplayName])];
       setGeneralRanking(buildRanking(rows, basePlayers));
-      setDailyRanking(buildRanking(dailyRows));
     } catch (err) {
       console.error('Error fetching leaderboards:', err);
+      setLeaderboardRows([]);
       setDailyRanking([]);
       setGeneralRanking([]);
     } finally {
@@ -341,6 +343,7 @@ const App: React.FC = () => {
         void fetchLeaderboards();
       } else {
         setGameState(GameState.AUTH);
+        setLeaderboardRows([]);
         setDailyRanking([]);
         setGeneralRanking([]);
       }
@@ -390,6 +393,9 @@ const App: React.FC = () => {
     setUser(null);
     setGameState(GameState.AUTH);
     setPlayers([]);
+    setLeaderboardRows([]);
+    setDailyRanking([]);
+    setGeneralRanking([]);
     setReviewDayIndex(null);
     setSequentialSimulationActive(false);
     setSequentialSimulationDay(0);
@@ -403,6 +409,25 @@ const App: React.FC = () => {
     d.setHours(0, 0, 0, 0);
     return d;
   }, [sequentialSimulationActive, sequentialSimulationDay, challengeStartDate]);
+
+  const currentChallengeDayIndex = useMemo(() => {
+    const today = simulationToday ? new Date(simulationToday) : new Date();
+    today.setHours(0, 0, 0, 0);
+    const start = new Date(`${challengeStartDate}T00:00:00`);
+    const elapsedDays = Math.floor((today.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+    if (elapsedDays < 0) return 0;
+    if (elapsedDays >= DAYS_COUNT) return DAYS_COUNT - 1;
+    return elapsedDays;
+  }, [challengeStartDate, simulationToday]);
+
+  useEffect(() => {
+    setSelectedDailyLeaderboardDay(currentChallengeDayIndex);
+  }, [currentChallengeDayIndex]);
+
+  useEffect(() => {
+    const dailyRows = leaderboardRows.filter((row) => Number.isInteger(row.day_index) && row.day_index === selectedDailyLeaderboardDay);
+    setDailyRanking(buildRanking(dailyRows));
+  }, [leaderboardRows, selectedDailyLeaderboardDay]);
 
   const nextAvailableDay = useMemo(() => {
     const today = simulationToday ? new Date(simulationToday) : new Date();
@@ -1041,13 +1066,34 @@ const App: React.FC = () => {
                       Orokorra
                     </button>
                   </div>
+
+                  {leaderboardView === 'DAILY' && (
+                    <div className="mt-3">
+                      <label className="block text-[9px] font-black uppercase tracking-wider text-white/80 mb-1">
+                        Eguna
+                      </label>
+                      <select
+                        value={selectedDailyLeaderboardDay}
+                        onChange={(e) => setSelectedDailyLeaderboardDay(Number(e.target.value))}
+                        className="w-full rounded-xl border border-white/30 bg-white/90 text-pink-700 px-3 py-2 text-[11px] font-black outline-none"
+                      >
+                        {Array.from({ length: DAYS_COUNT }, (_, idx) => (
+                          <option key={`leaderboard-day-${idx}`} value={idx}>
+                            {idx + 1}. eguna
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                 </div>
 
                 <div className="p-4">
                   {activeRanking.length === 0 ? (
                     <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center">
                       <p className="text-[10px] font-bold text-gray-400">
-                        {leaderboardView === 'DAILY' ? 'Gaur ez dago emaitzarik oraindik.' : 'Oraindik ez dago rankingerako daturik.'}
+                        {leaderboardView === 'DAILY'
+                          ? `Ez dago ${selectedDailyLeaderboardDay + 1}. eguneko emaitzarik oraindik.`
+                          : 'Oraindik ez dago rankingerako daturik.'}
                       </p>
                     </div>
                   ) : (
