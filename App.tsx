@@ -41,6 +41,10 @@ type GameResultRow = {
   played_at: string | null;
   day_index: number | null;
 };
+type UserDailyPlayRow = {
+  day_index: number;
+  played_at: string;
+};
 type LeaderboardView = 'DAILY' | 'GENERAL';
 type KorrikaEdukia = {
   day: number;
@@ -93,6 +97,7 @@ const App: React.FC = () => {
   const [savingAdminConfig, setSavingAdminConfig] = useState(false);
   const [dailyPlayLockMessage, setDailyPlayLockMessage] = useState<string | null>(null);
   const [validatingDailyStart, setValidatingDailyStart] = useState(false);
+  const [userDailyPlays, setUserDailyPlays] = useState<UserDailyPlayRow[]>([]);
 
   // Multiplayer State
   const [players, setPlayers] = useState<Player[]>([]);
@@ -200,6 +205,44 @@ const App: React.FC = () => {
       setGeneralRanking([]);
     } finally {
       setLoadingRanking(false);
+    }
+  };
+
+  const fetchUserDailyPlays = async (userIdParam?: string) => {
+    const targetUserId = userIdParam ?? user?.id;
+    if (!targetUserId) {
+      setUserDailyPlays([]);
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('game_results')
+        .select('day_index, played_at')
+        .eq('user_id', targetUserId)
+        .eq('play_mode', 'DAILY')
+        .not('day_index', 'is', null)
+        .order('played_at', { ascending: false })
+        .limit(200);
+
+      if (error) throw error;
+
+      const rows = (data ?? []) as Array<{ day_index: number | null; played_at: string | null }>;
+      const uniqueByDay = new Map<number, UserDailyPlayRow>();
+
+      rows.forEach((row) => {
+        if (!Number.isInteger(row.day_index) || !row.played_at) return;
+        const dayIdx = row.day_index as number;
+        if (dayIdx < 0 || dayIdx >= DAYS_COUNT) return;
+        if (!uniqueByDay.has(dayIdx)) {
+          uniqueByDay.set(dayIdx, { day_index: dayIdx, played_at: row.played_at });
+        }
+      });
+
+      setUserDailyPlays([...uniqueByDay.values()].sort((a, b) => a.day_index - b.day_index));
+    } catch (err) {
+      console.error('Error fetching user daily plays:', err);
+      setUserDailyPlays([]);
     }
   };
 
@@ -318,6 +361,7 @@ const App: React.FC = () => {
         if (session?.user) {
           setUser(session.user);
           setGameState(GameState.HOME);
+          void fetchUserDailyPlays(session.user.id);
         }
       } catch (err) {
         console.error("Session check error:", err);
@@ -344,10 +388,12 @@ const App: React.FC = () => {
         void fetchGlobalStartDate();
         void fetchRegisteredPlayers();
         void fetchLeaderboards();
+        void fetchUserDailyPlays(session.user.id);
       } else {
         setGameState(GameState.AUTH);
         setDailyPlayLockMessage(null);
         setValidatingDailyStart(false);
+        setUserDailyPlays([]);
         setLeaderboardRows([]);
         setDailyRanking([]);
         setGeneralRanking([]);
@@ -401,6 +447,7 @@ const App: React.FC = () => {
     setPlayers([]);
     setDailyPlayLockMessage(null);
     setValidatingDailyStart(false);
+    setUserDailyPlays([]);
     setLeaderboardRows([]);
     setDailyRanking([]);
     setGeneralRanking([]);
@@ -437,10 +484,29 @@ const App: React.FC = () => {
     setDailyRanking(buildRanking(dailyRows));
   }, [leaderboardRows, selectedDailyLeaderboardDay]);
 
+  const effectiveDailyProgress = useMemo(() => {
+    if (sequentialSimulationActive) return sequentialSimulationProgress;
+
+    const merged = [...progress];
+    userDailyPlays.forEach((play) => {
+      const existing = merged[play.day_index];
+      if (existing?.completed) return;
+      merged[play.day_index] = {
+        dayIndex: play.day_index,
+        score: existing?.score ?? 0,
+        completed: true,
+        date: play.played_at,
+        answers: existing?.answers ?? [],
+        players: existing?.players
+      };
+    });
+    return merged;
+  }, [progress, sequentialSimulationActive, sequentialSimulationProgress, userDailyPlays]);
+
   const nextAvailableDay = useMemo(() => {
     const today = simulationToday ? new Date(simulationToday) : new Date();
     today.setHours(0, 0, 0, 0);
-    const sourceProgress = sequentialSimulationActive ? sequentialSimulationProgress : progress;
+    const sourceProgress = effectiveDailyProgress;
 
     const start = new Date(`${challengeStartDate}T00:00:00`);
     const todayIndex = Math.floor((today.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
@@ -461,7 +527,7 @@ const App: React.FC = () => {
       return i;
     }
     return -3;
-  }, [progress, challengeStartDate, simulationToday, sequentialSimulationActive, sequentialSimulationProgress]);
+  }, [effectiveDailyProgress, challengeStartDate, simulationToday]);
 
   const generateQuestions = useCallback((mode: PlayMode, idx: number) => {
     if (quizData.length === 0) return [];
@@ -540,7 +606,7 @@ const App: React.FC = () => {
     if (playMode === 'DAILY') {
       const alreadyPlayed = await hasPlayedDailyOnServer(dayIndex);
       if (alreadyPlayed) {
-        setDailyPlayLockMessage(`Ya has jugado el día ${dayIndex + 1}. Solo se permite una partida diaria por cuenta.`);
+        setDailyPlayLockMessage(`${dayIndex + 1}. eguna dagoeneko jokatu duzu. Kontu bakoitzak partida bakarra jokatu dezake egunean.`);
         return;
       }
     }
@@ -577,7 +643,7 @@ const App: React.FC = () => {
     const { error } = await supabase.from('game_results').insert(rows);
     if (error) {
       if ((error as any).code === '23505' && playMode === 'DAILY') {
-        setDailyPlayLockMessage(`Ya has jugado el día ${dayIndex + 1}. Solo se permite una partida diaria por cuenta.`);
+        setDailyPlayLockMessage(`${dayIndex + 1}. eguna dagoeneko jokatu duzu. Kontu bakoitzak partida bakarra jokatu dezake egunean.`);
       }
       console.error("Error saving game results:", error);
     }
@@ -619,6 +685,7 @@ const App: React.FC = () => {
     if (!isSimulationRun && !sequentialSimulationActive) {
       await persistGameResults(finalPlayers);
       await fetchLeaderboards();
+      await fetchUserDailyPlays();
     }
     
     setReviewDayIndex(null);
@@ -667,8 +734,9 @@ const App: React.FC = () => {
       try {
         const alreadyPlayed = await hasPlayedDailyOnServer(idx);
         if (alreadyPlayed) {
-          setDailyPlayLockMessage(`Ya has jugado el día ${idx + 1}. Solo se permite una partida diaria por cuenta.`);
+          setDailyPlayLockMessage(`${idx + 1}. eguna dagoeneko jokatu duzu. Kontu bakoitzak partida bakarra jokatu dezake egunean.`);
           await fetchLeaderboards();
+          await fetchUserDailyPlays();
           return;
         }
       } finally {
@@ -800,6 +868,8 @@ const App: React.FC = () => {
   const userDisplayName = (user?.email?.split('@')[0] || 'Gonbidatua').toUpperCase();
   const isAdmin = ADMIN_USERS.includes((user?.email?.split('@')[0] || '').toLowerCase());
   const activeRanking = leaderboardView === 'DAILY' ? dailyRanking : generalRanking;
+  const showDailyPlayButton = nextAvailableDay >= 0 || nextAvailableDay === -4 || nextAvailableDay === -1 || nextAvailableDay === -2;
+  const dailyPlayButtonDisabled = validatingDailyStart || nextAvailableDay < 0;
   const challengeStartTs = useMemo(() => new Date(`${challengeStartDate}T00:00:00`).getTime(), [challengeStartDate]);
   const effectiveNowTs = simulationToday ? simulationToday.getTime() : nowTs;
   const timeUntilStart = Math.max(0, challengeStartTs - effectiveNowTs);
@@ -1025,23 +1095,28 @@ const App: React.FC = () => {
                 </section>
               )}
 
-              {nextAvailableDay >= 0 || nextAvailableDay === -4 ? (
+              {showDailyPlayButton ? (
                 <div className="flex flex-col gap-3 w-full px-8">
                   <button
                     onClick={() => void initGame('SOLO', 'DAILY')}
-                    disabled={nextAvailableDay === -4 || validatingDailyStart}
+                    disabled={dailyPlayButtonDisabled}
                     className="korrika-bg-gradient text-white py-4 rounded-2xl font-black text-lg uppercase italic shadow-lg hover:scale-[1.02] transition-all active:scale-95 border-2 border-white/20 disabled:opacity-70 disabled:scale-100 disabled:cursor-not-allowed"
                   >
                     {validatingDailyStart
                       ? 'Egiaztatzen...'
                       : nextAvailableDay === -4
                       ? `Jolastu aktibatuko da: ${formatCountdown(timeUntilStart)}`
+                      : nextAvailableDay === -1 || nextAvailableDay === -2
+                      ? 'Gaurko partida eginda'
                       : `Jolastu (${nextAvailableDay + 1}. Eguna)`}
                   </button>
                   {dailyPlayLockMessage && (
                     <p className="text-[10px] font-bold text-red-500 text-center bg-red-50 border border-red-100 rounded-xl px-3 py-2">
                       {dailyPlayLockMessage}
                     </p>
+                  )}
+                  {!dailyPlayLockMessage && (nextAvailableDay === -1 || nextAvailableDay === -2) && (
+                    <p className="text-[10px] font-bold text-gray-500 text-center">Bihar berriz jokatu ahal izango duzu.</p>
                   )}
                 </div>
               ) : (
