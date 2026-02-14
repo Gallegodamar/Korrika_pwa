@@ -196,7 +196,9 @@ const App: React.FC = () => {
       const rows = (data ?? []) as GameResultRow[];
       setLeaderboardRows(rows);
 
-      const basePlayers = [...new Set([...registeredPlayers, userDisplayName])];
+      const basePlayers = user?.id
+        ? [...new Set([...registeredPlayers, userDisplayName])]
+        : [...new Set(registeredPlayers)];
       setGeneralRanking(buildRanking(rows, basePlayers));
     } catch (err) {
       console.error('Error fetching leaderboards:', err);
