@@ -1,11 +1,38 @@
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { User } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 import { GameState, Question, DailyProgress, UserAnswer, Player, PlayMode, QuizData } from './types';
+import CountdownScreen from './components/CountdownScreen';
+import QuizScreen from './components/QuizScreen';
+import AuthScreen from './components/screens/AuthScreen';
+import HomeScreen from './components/screens/HomeScreen';
+import PlayerSetupScreen from './components/screens/PlayerSetupScreen';
+import TurnTransitionScreen from './components/screens/TurnTransitionScreen';
+import ResultsScreen from './components/screens/ResultsScreen';
+import RankingScreen from './components/screens/RankingScreen';
+import SupervisorScreen from './components/screens/SupervisorScreen';
+import { readLocalCache, removeLocalCache, writeLocalCache } from './utils/localCache';
+import { buildRanking } from './utils/ranking';
+import {
+  GameResultRow,
+  KorrikaEdukia,
+  UserDailyPlayRow,
+  getEdukiak,
+  getGlobalStartDate,
+  getLeaderboards,
+  getQuizData,
+  getRegisteredPlayers,
+  getUserDailyPlays,
+  saveGlobalStartDate
+} from './services/korrikaApi';
 
 const STORAGE_KEY = 'korrika_quiz_progress_v6';
 const SIMULATION_STORAGE_KEY = 'korrika_simulation_mode';
+const QUIZ_CACHE_KEY = 'korrika_quiz_data_v1';
+const EDUKIAK_CACHE_KEY = 'korrika_edukiak_v1';
+const PLAYERS_CACHE_KEY = 'korrika_registered_players_v1';
+const START_DATE_CACHE_KEY = 'korrika_start_date_v1';
 const GLOBAL_CONFIG_TABLE = 'korrika_app_config';
 const START_DATE_CONFIG_KEY = 'challenge_start_date';
 const DAYS_COUNT = 11;
@@ -13,6 +40,182 @@ const QUESTIONS_PER_DAY = 12;
 const SECONDS_PER_QUESTION = 20;
 const DEFAULT_CHALLENGE_START_DATE = '2026-02-14';
 const ADMIN_USERS = ['admin', 'k_admin'];
+const DAY_OPTIONS = Array.from({ length: DAYS_COUNT }, (_, idx) => idx);
+const QUIZ_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
+const EDUKIAK_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
+const PLAYERS_CACHE_TTL_MS = 1000 * 60 * 10;
+const START_DATE_CACHE_TTL_MS = 1000 * 60 * 5;
+const PROFILING_DEMO_QUIZ_DATA: QuizData[] = [
+  {
+    capitulo: 'Euskara',
+    preguntas: [
+      {
+        id: 1001,
+        pregunta: 'Euskara zein hizkuntza familiatakoa da?',
+        respuesta_correcta: 'b',
+        opciones: {
+          a: 'Erromantzea',
+          b: 'Isolatua',
+          c: 'Germaniarra',
+          d: 'Eslaviarra'
+        }
+      },
+      {
+        id: 1002,
+        pregunta: 'Zein da "eskerrik asko" gaztelaniaz?',
+        respuesta_correcta: 'a',
+        opciones: {
+          a: 'gracias',
+          b: 'adios',
+          c: 'hola',
+          d: 'perdon'
+        }
+      }
+    ]
+  },
+  {
+    capitulo: 'Korrika',
+    preguntas: [
+      {
+        id: 1003,
+        pregunta: 'Korrikaren helburu nagusia zein da?',
+        respuesta_correcta: 'c',
+        opciones: {
+          a: 'Turismoa',
+          b: 'Kirol txapelketa',
+          c: 'Euskara sustatzea',
+          d: 'Ibilgailu lasterketa'
+        }
+      },
+      {
+        id: 1004,
+        pregunta: 'Korrika AEKrekin lotuta dago?',
+        respuesta_correcta: 'd',
+        opciones: {
+          a: 'Ez, inoiz ez',
+          b: 'Bakarrik udan',
+          c: 'Soilik online',
+          d: 'Bai, guztiz lotuta'
+        }
+      }
+    ]
+  },
+  {
+    capitulo: 'Historia',
+    preguntas: [
+      {
+        id: 1005,
+        pregunta: 'Euskal Herria Europan dago?',
+        respuesta_correcta: 'a',
+        opciones: {
+          a: 'Bai',
+          b: 'Ez',
+          c: 'Batzuetan',
+          d: 'Kontinenterik gabe'
+        }
+      },
+      {
+        id: 1006,
+        pregunta: 'Nafarroa Euskal Herriko lurralde bat da?',
+        respuesta_correcta: 'b',
+        opciones: {
+          a: 'Ez',
+          b: 'Bai',
+          c: 'Bakarrik mapan',
+          d: 'Ez dakit'
+        }
+      }
+    ]
+  },
+  {
+    capitulo: 'Kultura',
+    preguntas: [
+      {
+        id: 1007,
+        pregunta: 'Bertsolaritza ahozko tradizioa da?',
+        respuesta_correcta: 'c',
+        opciones: {
+          a: 'Ez, idatzia da',
+          b: 'Musika klasikoa da',
+          c: 'Bai, ahozkoa da',
+          d: 'Soilik zineman'
+        }
+      },
+      {
+        id: 1008,
+        pregunta: 'Trikitixa zer da?',
+        respuesta_correcta: 'd',
+        opciones: {
+          a: 'Jantzi bat',
+          b: 'Mendi bat',
+          c: 'Liburu bat',
+          d: 'Musika tresna eta estiloa'
+        }
+      }
+    ]
+  },
+  {
+    capitulo: 'Geografia',
+    preguntas: [
+      {
+        id: 1009,
+        pregunta: 'Bilbo Bizkaian dago?',
+        respuesta_correcta: 'a',
+        opciones: {
+          a: 'Bai',
+          b: 'Ez',
+          c: 'Arabako hiriburua da',
+          d: 'Nafarroan dago'
+        }
+      },
+      {
+        id: 1010,
+        pregunta: 'Donostia itsaso ondoan dago?',
+        respuesta_correcta: 'b',
+        opciones: {
+          a: 'Ez',
+          b: 'Bai',
+          c: 'Basamortuan',
+          d: 'Mendirik gabe'
+        }
+      }
+    ]
+  },
+  {
+    capitulo: 'Gizartea',
+    preguntas: [
+      {
+        id: 1011,
+        pregunta: 'Egunerokoan euskara erabiltzea garrantzitsua da?',
+        respuesta_correcta: 'c',
+        opciones: {
+          a: 'Ez du eraginik',
+          b: 'Bakarrik eskolan',
+          c: 'Bai, biziberritzeko giltza da',
+          d: 'Soilik jaietan'
+        }
+      },
+      {
+        id: 1012,
+        pregunta: 'Hizkuntza bat erabiltzen ez bada, zer gertatzen da?',
+        respuesta_correcta: 'd',
+        opciones: {
+          a: 'Automatikoki indartzen da',
+          b: 'Ez da ezer gertatzen',
+          c: 'Berez berritzen da',
+          d: 'Ahuldu edo gal daiteke'
+        }
+      }
+    ]
+  }
+];
+const PROFILING_DEMO_EDUKIAK: KorrikaEdukia[] = [
+  {
+    day: 1,
+    title: 'Profilatzeko saio automatikoa',
+    content: 'Eduki honek apparen errendimendua neurtzeko pantailak automatikoki zeharkatzen ditu.'
+  }
+];
 
 const getLocalDateKey = (dateInput?: string | Date) => {
   const d = dateInput ? new Date(dateInput) : new Date();
@@ -30,30 +233,41 @@ const formatCountdown = (ms: number) => {
   return `${hours}:${minutes}:${seconds}`;
 };
 
-type RankingEntry = {
-  playerName: string;
-  points: number;
-  games: number;
-};
-type GameResultRow = {
-  player_name: string | null;
-  correct_answers: number | null;
-  played_at: string | null;
-  day_index: number | null;
-};
-type UserDailyPlayRow = {
-  day_index: number;
-  played_at: string;
-};
 type LeaderboardView = 'DAILY' | 'GENERAL';
-type KorrikaEdukia = {
-  day: number;
-  title: string;
-  content: string;
+
+type ProfileStats = {
+  commits: number;
+  totalActualDuration: number;
+  maxActualDuration: number;
 };
-type PlayersSource = {
-  table: string;
-  columns: string[];
+
+type ProfileRow = {
+  id: string;
+  commits: number;
+  totalMs: number;
+  avgMs: number;
+  maxMs: number;
+};
+
+const shuffle = <T,>(items: T[]) => {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+};
+
+const pickRandomItems = <T,>(items: T[], count: number) => {
+  if (count <= 0 || items.length === 0) return [];
+
+  const copy = [...items];
+  const limit = Math.min(count, copy.length);
+  for (let i = 0; i < limit; i += 1) {
+    const j = i + Math.floor(Math.random() * (copy.length - i));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy.slice(0, limit);
 };
 
 const App: React.FC = () => {
@@ -61,6 +275,10 @@ const App: React.FC = () => {
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [loadingData, setLoadingData] = useState(true);
   const [quizData, setQuizData] = useState<QuizData[]>([]);
+  const leaderboardsRequestRef = useRef<Promise<void> | null>(null);
+  const userDailyPlaysRequestRef = useRef<Map<string, Promise<void>>>(new Map());
+  const leaderboardsFetchedAtRef = useRef(0);
+  const userDailyPlaysFetchedAtRef = useRef<Map<string, number>>(new Map());
   
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -70,13 +288,9 @@ const App: React.FC = () => {
   const [playMode, setPlayMode] = useState<PlayMode>('DAILY');
   const [dayIndex, setDayIndex] = useState(0);
   const [currentQuestionIdx, setCurrentQuestionIdx] = useState(0);
-  const [timer, setTimer] = useState(SECONDS_PER_QUESTION);
   const [progress, setProgress] = useState<DailyProgress[]>([]);
   const [supervisorCategory, setSupervisorCategory] = useState<string>('GUZTIAK');
-  const [countdown, setCountdown] = useState(3);
   const [activeQuestions, setActiveQuestions] = useState<Question[]>([]);
-  const [dailyRanking, setDailyRanking] = useState<RankingEntry[]>([]);
-  const [generalRanking, setGeneralRanking] = useState<RankingEntry[]>([]);
   const [leaderboardRows, setLeaderboardRows] = useState<GameResultRow[]>([]);
   const [loadingRanking, setLoadingRanking] = useState(false);
   const [leaderboardView, setLeaderboardView] = useState<LeaderboardView>('DAILY');
@@ -98,6 +312,23 @@ const App: React.FC = () => {
   const [dailyPlayLockMessage, setDailyPlayLockMessage] = useState<string | null>(null);
   const [validatingDailyStart, setValidatingDailyStart] = useState(false);
   const [userDailyPlays, setUserDailyPlays] = useState<UserDailyPlayRow[]>([]);
+  const [profileRows, setProfileRows] = useState<ProfileRow[]>([]);
+  const profileStatsRef = useRef<Map<string, ProfileStats>>(new Map());
+  const autoplayStartedRef = useRef(false);
+  const autoplayQuestionRef = useRef<number | null>(null);
+  const profilingEnabled = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    return new URLSearchParams(window.location.search).get('profiling') === '1';
+  }, []);
+  const profilingDemoEnabled = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    return new URLSearchParams(window.location.search).get('profilingDemo') === '1';
+  }, []);
+  const profilingAutoplayEnabled = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    return new URLSearchParams(window.location.search).get('autoplay') === '1';
+  }, []);
+  const profilingAutomationEnabled = profilingEnabled && profilingDemoEnabled && profilingAutoplayEnabled;
 
   // Multiplayer State
   const [players, setPlayers] = useState<Player[]>([]);
@@ -105,258 +336,208 @@ const App: React.FC = () => {
   const [tempPlayerNames, setTempPlayerNames] = useState<string[]>(['Jokalari 1', 'Jokalari 2']);
 
   // --- SUPABASE DATA FETCHING ---
-  const buildRanking = (
-    rows: Array<{ player_name: string | null; correct_answers: number | null }>,
-    basePlayers: string[] = []
-  ) => {
-    const scoreMap = new Map<string, RankingEntry>();
 
-    basePlayers.forEach((name) => {
-      const cleanName = name.trim();
-      if (!cleanName) return;
-      scoreMap.set(cleanName, { playerName: cleanName, points: 0, games: 0 });
-    });
-
-    rows.forEach((row) => {
-      const name = (row.player_name ?? '').trim().toUpperCase();
-      if (!name) return;
-
-      const current = scoreMap.get(name) ?? { playerName: name, points: 0, games: 0 };
-      current.points += row.correct_answers ?? 0;
-      current.games += 1;
-      scoreMap.set(name, current);
-    });
-
-    return [...scoreMap.values()].sort((a, b) => {
-      if (b.points !== a.points) return b.points - a.points;
-      if (a.games !== b.games) return a.games - b.games;
-      return a.playerName.localeCompare(b.playerName);
-    });
-  };
-
-  const fetchRegisteredPlayers = async () => {
-    const sources: PlayersSource[] = [
-      { table: 'korrika_jokalariak', columns: ['name', 'username', 'email', 'code'] },
-      { table: 'players', columns: ['name', 'username', 'email'] },
-      { table: 'profiles', columns: ['username', 'full_name', 'email'] },
-      { table: 'usuarios', columns: ['nombre', 'username', 'email', 'codigo'] }
-    ];
-
-    for (const source of sources) {
-      try {
-        const { data, error } = await supabase
-          .from(source.table)
-          .select(source.columns.join(','))
-          .limit(1000);
-
-        if (error) continue;
-
-        const names = ((data ?? []) as Array<Record<string, unknown>>)
-          .map((row) => {
-            const raw =
-              row['name'] ??
-              row['username'] ??
-              row['full_name'] ??
-              row['nombre'] ??
-              row['code'] ??
-              row['codigo'] ??
-              row['email'];
-
-            if (!raw) return '';
-            const value = String(raw).trim();
-            if (!value) return '';
-            if (value.includes('@')) return value.split('@')[0].toUpperCase();
-            return value.toUpperCase();
-          })
-          .filter(Boolean);
-
-        if (names.length > 0) {
-          setRegisteredPlayers([...new Set(names)]);
-          return;
-        }
-      } catch {
-        // ignore and continue with next candidate source
+  const fetchRegisteredPlayers = async (force = false) => {
+    if (!force) {
+      const cachedPlayers = readLocalCache<string[]>(PLAYERS_CACHE_KEY, PLAYERS_CACHE_TTL_MS);
+      if (cachedPlayers) {
+        setRegisteredPlayers(cachedPlayers);
+        return;
       }
     }
 
-    setRegisteredPlayers([]);
-  };
-
-  const fetchLeaderboards = async () => {
     try {
-      setLoadingRanking(true);
-      const { data, error } = await supabase
-        .from('game_results')
-        .select('player_name, correct_answers, played_at, day_index')
-        .order('played_at', { ascending: false })
-        .limit(5000);
-
-      if (error) throw error;
-
-      const rows = (data ?? []) as GameResultRow[];
-      setLeaderboardRows(rows);
-
-      const basePlayers = user?.id
-        ? [...new Set([...registeredPlayers, userDisplayName])]
-        : [...new Set(registeredPlayers)];
-      setGeneralRanking(buildRanking(rows, basePlayers));
-    } catch (err) {
-      console.error('Error fetching leaderboards:', err);
-      setLeaderboardRows([]);
-      setDailyRanking([]);
-      setGeneralRanking([]);
-    } finally {
-      setLoadingRanking(false);
+      const names = await getRegisteredPlayers();
+      setRegisteredPlayers(names);
+      if (names.length > 0) {
+        writeLocalCache(PLAYERS_CACHE_KEY, names);
+      } else {
+        removeLocalCache(PLAYERS_CACHE_KEY);
+      }
+    } catch {
+      setRegisteredPlayers([]);
+      removeLocalCache(PLAYERS_CACHE_KEY);
     }
   };
 
-  const fetchUserDailyPlays = async (userIdParam?: string) => {
+  const fetchLeaderboards = useCallback(async (force = false) => {
+    if (!force && Date.now() - leaderboardsFetchedAtRef.current < 30000) return;
+    if (leaderboardsRequestRef.current) return leaderboardsRequestRef.current;
+
+    const request = (async () => {
+      try {
+        setLoadingRanking(true);
+        const rows = await getLeaderboards();
+        setLeaderboardRows(rows);
+        leaderboardsFetchedAtRef.current = Date.now();
+      } catch (err) {
+        console.error('Error fetching leaderboards:', err);
+        setLeaderboardRows([]);
+      } finally {
+        setLoadingRanking(false);
+      }
+    })();
+
+    leaderboardsRequestRef.current = request;
+    try {
+      await request;
+    } finally {
+      leaderboardsRequestRef.current = null;
+    }
+  }, []);
+
+  const fetchUserDailyPlays = useCallback(async (userIdParam?: string, force = false) => {
     const targetUserId = userIdParam ?? user?.id;
     if (!targetUserId) {
       setUserDailyPlays([]);
       return;
     }
 
+    const lastFetchTs = userDailyPlaysFetchedAtRef.current.get(targetUserId) ?? 0;
+    if (!force && Date.now() - lastFetchTs < 30000) return;
+
+    const existingRequest = userDailyPlaysRequestRef.current.get(targetUserId);
+    if (existingRequest) return existingRequest;
+
+    const request = (async () => {
+      try {
+        const rows = await getUserDailyPlays(targetUserId, DAYS_COUNT);
+        setUserDailyPlays(rows);
+        userDailyPlaysFetchedAtRef.current.set(targetUserId, Date.now());
+      } catch (err) {
+        console.error('Error fetching user daily plays:', err);
+        setUserDailyPlays([]);
+      }
+    })();
+
+    userDailyPlaysRequestRef.current.set(targetUserId, request);
     try {
-      const { data, error } = await supabase
-        .from('game_results')
-        .select('day_index, played_at')
-        .eq('user_id', targetUserId)
-        .eq('play_mode', 'DAILY')
-        .not('day_index', 'is', null)
-        .order('played_at', { ascending: false })
-        .limit(200);
-
-      if (error) throw error;
-
-      const rows = (data ?? []) as Array<{ day_index: number | null; played_at: string | null }>;
-      const uniqueByDay = new Map<number, UserDailyPlayRow>();
-
-      rows.forEach((row) => {
-        if (!Number.isInteger(row.day_index) || !row.played_at) return;
-        const dayIdx = row.day_index as number;
-        if (dayIdx < 0 || dayIdx >= DAYS_COUNT) return;
-        if (!uniqueByDay.has(dayIdx)) {
-          uniqueByDay.set(dayIdx, { day_index: dayIdx, played_at: row.played_at });
-        }
-      });
-
-      setUserDailyPlays([...uniqueByDay.values()].sort((a, b) => a.day_index - b.day_index));
-    } catch (err) {
-      console.error('Error fetching user daily plays:', err);
-      setUserDailyPlays([]);
+      await request;
+    } finally {
+      userDailyPlaysRequestRef.current.delete(targetUserId);
     }
-  };
+  }, [user?.id]);
 
-  const fetchEdukiak = async () => {
+  const fetchEdukiak = async (force = false) => {
+    if (!force) {
+      const cachedEdukiak = readLocalCache<KorrikaEdukia[]>(EDUKIAK_CACHE_KEY, EDUKIAK_CACHE_TTL_MS);
+      if (cachedEdukiak) {
+        setEdukiak(cachedEdukiak);
+        setLoadingEdukiak(false);
+        return;
+      }
+    }
+
     try {
       setLoadingEdukiak(true);
-      const { data, error } = await supabase.from('korrika_edukiak').select('*');
-      if (error) throw error;
-
-      const mapped = ((data ?? []) as Array<Record<string, unknown>>)
-        .map((row) => {
-          const dayRaw = row['day'] ?? row['day_index'] ?? row['dia'] ?? row['eguna'];
-          const titleRaw = row['title'] ?? row['titulo'] ?? row['izenburua'] ?? row['izenburua_eu'];
-          const contentRaw = row['content'] ?? row['text'] ?? row['testua'] ?? row['edukia'] ?? row['body'];
-
-          const day = Number(dayRaw);
-          const title = String(titleRaw ?? `Eguna ${day}`);
-          const content = String(contentRaw ?? '').trim();
-
-          if (!Number.isFinite(day) || day < 0 || day > DAYS_COUNT || !content) return null;
-          return { day, title, content };
-        })
-        .filter((item): item is KorrikaEdukia => Boolean(item))
-        .sort((a, b) => a.day - b.day);
-
+      const mapped = await getEdukiak(DAYS_COUNT);
       setEdukiak(mapped);
+      writeLocalCache(EDUKIAK_CACHE_KEY, mapped);
     } catch (err) {
       console.error('Error fetching korrika_edukiak:', err);
       setEdukiak([]);
+      removeLocalCache(EDUKIAK_CACHE_KEY);
     } finally {
       setLoadingEdukiak(false);
     }
   };
 
-  const fetchQuizData = async () => {
+  const fetchQuizData = async (force = false) => {
+    if (!force) {
+      const cachedQuizData = readLocalCache<QuizData[]>(QUIZ_CACHE_KEY, QUIZ_CACHE_TTL_MS);
+      if (cachedQuizData) {
+        setQuizData(cachedQuizData);
+        setLoadingData(false);
+        return;
+      }
+    }
+
     try {
       setLoadingData(true);
-      const { data, error } = await supabase
-        .from("chapters")
-        .select(`id, name, questions:questions (id, legacy_id, question_text, correct_key, options:options (opt_key, opt_text))`);
-
-      if (error) throw error;
-
-      const mappedData: QuizData[] = (data || []).map((chapter: any) => ({
-        capitulo: chapter.name,
-        preguntas: (chapter.questions ?? []).map((q: any) => {
-          const sortedOptions = (q.options ?? []).sort((a: any, b: any) =>
-            a.opt_key.localeCompare(b.opt_key)
-          );
-          
-          return {
-            id: q.id,
-            pregunta: q.question_text,
-            respuesta_correcta: q.correct_key,
-            categoryName: chapter.name,
-            opciones: sortedOptions.reduce((acc: any, opt: any) => {
-              acc[opt.opt_key] = opt.opt_text;
-              return acc;
-            }, {})
-          };
-        })
-      }));
-
+      const mappedData = await getQuizData();
       setQuizData(mappedData);
-    } catch (err: any) {
+      writeLocalCache(QUIZ_CACHE_KEY, mappedData);
+    } catch (err) {
       console.error("Error fetching quiz data:", err);
-      alert(`Error cargando datos: ${err.message || 'Error desconocido'}`);
+      setQuizData([]);
+      removeLocalCache(QUIZ_CACHE_KEY);
     } finally {
       setLoadingData(false);
     }
   };
 
-  const fetchGlobalStartDate = async () => {
+  const fetchGlobalStartDate = async (force = false) => {
+    if (!force) {
+      const cachedStartDate = readLocalCache<string>(START_DATE_CACHE_KEY, START_DATE_CACHE_TTL_MS);
+      if (cachedStartDate && /^\d{4}-\d{2}-\d{2}$/.test(cachedStartDate)) {
+        setChallengeStartDate(cachedStartDate);
+        setAdminStartDateInput(cachedStartDate);
+        return;
+      }
+    }
+
     try {
-      const { data, error } = await supabase
-        .from(GLOBAL_CONFIG_TABLE)
-        .select('config_value')
-        .eq('config_key', START_DATE_CONFIG_KEY)
-        .maybeSingle();
-
-      if (error) throw error;
-
-      const rawValue = String((data as { config_value?: string } | null)?.config_value ?? '').trim();
-      if (/^\d{4}-\d{2}-\d{2}$/.test(rawValue)) {
+      const rawValue = await getGlobalStartDate(GLOBAL_CONFIG_TABLE, START_DATE_CONFIG_KEY);
+      if (rawValue) {
         setChallengeStartDate(rawValue);
         setAdminStartDateInput(rawValue);
+        writeLocalCache(START_DATE_CACHE_KEY, rawValue);
       } else {
         setChallengeStartDate(DEFAULT_CHALLENGE_START_DATE);
         setAdminStartDateInput(DEFAULT_CHALLENGE_START_DATE);
+        removeLocalCache(START_DATE_CACHE_KEY);
       }
     } catch (err) {
       console.error('Error fetching global start date:', err);
       setChallengeStartDate(DEFAULT_CHALLENGE_START_DATE);
       setAdminStartDateInput(DEFAULT_CHALLENGE_START_DATE);
+      removeLocalCache(START_DATE_CACHE_KEY);
     }
   };
 
   useEffect(() => {
-    const intervalId = setInterval(() => setNowTs(Date.now()), 1000);
-    return () => clearInterval(intervalId);
-  }, []);
+    if (gameState !== GameState.HOME) return;
+    if (sequentialSimulationActive) return;
 
-  useEffect(() => {
-    if (registeredPlayers.length === 0) return;
-    void fetchLeaderboards();
-  }, [registeredPlayers]);
+    const startTs = new Date(`${challengeStartDate}T00:00:00`).getTime();
+    if (Date.now() >= startTs) return;
+
+    setNowTs(Date.now());
+    const intervalId = window.setInterval(() => {
+      const currentTs = Date.now();
+      setNowTs(currentTs);
+      if (currentTs >= startTs) {
+        clearInterval(intervalId);
+      }
+    }, 1000);
+    return () => clearInterval(intervalId);
+  }, [gameState, sequentialSimulationActive, challengeStartDate]);
 
   useEffect(() => {
     localStorage.setItem(SIMULATION_STORAGE_KEY, simulationEnabled ? '1' : '0');
   }, [simulationEnabled]);
 
   useEffect(() => {
+    if (profilingDemoEnabled) {
+      const todayKey = getLocalDateKey();
+      setUser({ id: 'profiling-admin', email: 'admin@korrika.app' } as User);
+      setLoadingAuth(false);
+      setLoadingData(false);
+      setGameState(GameState.HOME);
+      setQuizData(PROFILING_DEMO_QUIZ_DATA);
+      setLeaderboardRows([]);
+      setUserDailyPlays([]);
+      setRegisteredPlayers(['ADMIN', 'JOKALARI DEMO']);
+      setEdukiak(PROFILING_DEMO_EDUKIAK);
+      setLoadingEdukiak(false);
+      setChallengeStartDate(todayKey);
+      setAdminStartDateInput(todayKey);
+      setSimulationEnabled(true);
+      setProgress([]);
+      localStorage.removeItem(STORAGE_KEY);
+      return;
+    }
+
     const checkUser = async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession();
@@ -382,7 +563,8 @@ const App: React.FC = () => {
     fetchEdukiak();
     fetchRegisteredPlayers();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'INITIAL_SESSION') return;
       setUser(session?.user ?? null);
       if (session?.user) {
         setGameState(GameState.HOME);
@@ -393,20 +575,31 @@ const App: React.FC = () => {
         void fetchUserDailyPlays(session.user.id);
       } else {
         setGameState(GameState.AUTH);
+        userDailyPlaysRequestRef.current.clear();
+        userDailyPlaysFetchedAtRef.current.clear();
+        leaderboardsFetchedAtRef.current = 0;
         setDailyPlayLockMessage(null);
         setValidatingDailyStart(false);
         setUserDailyPlays([]);
         setLeaderboardRows([]);
-        setDailyRanking([]);
-        setGeneralRanking([]);
       }
     });
 
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) setProgress(JSON.parse(saved));
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          setProgress(parsed as DailyProgress[]);
+        }
+      } catch (err) {
+        console.error('Error loading local progress:', err);
+        localStorage.removeItem(STORAGE_KEY);
+      }
+    }
 
     return () => subscription.unsubscribe();
-  }, []);
+  }, [profilingDemoEnabled]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -444,6 +637,10 @@ const App: React.FC = () => {
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
+    leaderboardsRequestRef.current = null;
+    leaderboardsFetchedAtRef.current = 0;
+    userDailyPlaysRequestRef.current.clear();
+    userDailyPlaysFetchedAtRef.current.clear();
     setUser(null);
     setGameState(GameState.AUTH);
     setPlayers([]);
@@ -451,8 +648,6 @@ const App: React.FC = () => {
     setValidatingDailyStart(false);
     setUserDailyPlays([]);
     setLeaderboardRows([]);
-    setDailyRanking([]);
-    setGeneralRanking([]);
     setReviewDayIndex(null);
     setSequentialSimulationActive(false);
     setSequentialSimulationDay(0);
@@ -480,11 +675,6 @@ const App: React.FC = () => {
   useEffect(() => {
     setSelectedDailyLeaderboardDay(currentChallengeDayIndex);
   }, [currentChallengeDayIndex]);
-
-  useEffect(() => {
-    const dailyRows = leaderboardRows.filter((row) => Number.isInteger(row.day_index) && row.day_index === selectedDailyLeaderboardDay);
-    setDailyRanking(buildRanking(dailyRows));
-  }, [leaderboardRows, selectedDailyLeaderboardDay]);
 
   const effectiveDailyProgress = useMemo(() => {
     if (sequentialSimulationActive) return sequentialSimulationProgress;
@@ -536,20 +726,42 @@ const App: React.FC = () => {
     
     if (mode === 'RANDOM') {
       const questions: Question[] = [];
-      quizData.forEach(category => {
-        const shuffled = [...category.preguntas].sort(() => 0.5 - Math.random());
-        const picked = shuffled.slice(0, 2).map(q => ({ ...q, categoryName: category.capitulo }));
+      quizData.forEach((category: QuizData) => {
+        const sampled = pickRandomItems<Question>(category.preguntas as Question[], 2);
+        const picked = sampled.map((q: Question) => ({
+          id: q.id,
+          pregunta: q.pregunta,
+          opciones: q.opciones,
+          respuesta_correcta: q.respuesta_correcta,
+          categoryName: category.capitulo
+        }));
         questions.push(...picked);
       });
-      return questions.sort(() => 0.5 - Math.random());
+      return shuffle(questions);
     } else {
       const questions: Question[] = [];
-      quizData.forEach(category => {
+      quizData.forEach((category: QuizData) => {
         // Seleccionamos las dos preguntas correspondientes al día actual
-        const q1 = category.preguntas[idx * 2];
-        const q2 = category.preguntas[idx * 2 + 1];
-        if (q1) questions.push({ ...q1, categoryName: category.capitulo });
-        if (q2) questions.push({ ...q2, categoryName: category.capitulo });
+        const q1 = category.preguntas[idx * 2] as Question | undefined;
+        const q2 = category.preguntas[idx * 2 + 1] as Question | undefined;
+        if (q1) {
+          questions.push({
+            id: q1.id,
+            pregunta: q1.pregunta,
+            opciones: q1.opciones,
+            respuesta_correcta: q1.respuesta_correcta,
+            categoryName: category.capitulo
+          });
+        }
+        if (q2) {
+          questions.push({
+            id: q2.id,
+            pregunta: q2.pregunta,
+            opciones: q2.opciones,
+            respuesta_correcta: q2.respuesta_correcta,
+            categoryName: category.capitulo
+          });
+        }
       });
       return questions.slice(0, QUESTIONS_PER_DAY);
     }
@@ -592,7 +804,6 @@ const App: React.FC = () => {
 
     if (currentQuestionIdx < activeQuestions.length - 1) {
       setCurrentQuestionIdx(prev => prev + 1);
-      setTimer(SECONDS_PER_QUESTION);
     } else {
       if (currentPlayerIdx < players.length - 1) {
         setGameState(GameState.TURN_TRANSITION);
@@ -602,13 +813,17 @@ const App: React.FC = () => {
     }
   }, [currentQuestionIdx, activeQuestions, players, currentPlayerIdx]);
 
+  const handleCountdownComplete = useCallback(() => {
+    setGameState(GameState.QUIZ);
+  }, []);
+
   const persistGameResults = async (finalPlayers: Player[]) => {
     if (!user) return;
 
     if (playMode === 'DAILY') {
       const alreadyPlayed = await hasPlayedDailyOnServer(dayIndex);
       if (alreadyPlayed) {
-        setDailyPlayLockMessage(`${dayIndex + 1}. eguna dagoeneko jokatu duzu. Kontu bakoitzak partida bakarra jokatu dezake egunean.`);
+        setDailyPlayLockMessage(`${dayIndex + 1}. eguna dagoeneko jokatu duzu. Kontu bakoitzak saio bakarra jokatu dezake egunean.`);
         return;
       }
     }
@@ -645,7 +860,7 @@ const App: React.FC = () => {
     const { error } = await supabase.from('game_results').insert(rows);
     if (error) {
       if ((error as any).code === '23505' && playMode === 'DAILY') {
-        setDailyPlayLockMessage(`${dayIndex + 1}. eguna dagoeneko jokatu duzu. Kontu bakoitzak partida bakarra jokatu dezake egunean.`);
+        setDailyPlayLockMessage(`${dayIndex + 1}. eguna dagoeneko jokatu duzu. Kontu bakoitzak saio bakarra jokatu dezake egunean.`);
       }
       console.error("Error saving game results:", error);
     }
@@ -686,8 +901,8 @@ const App: React.FC = () => {
 
     if (!isSimulationRun && !sequentialSimulationActive) {
       await persistGameResults(finalPlayers);
-      await fetchLeaderboards();
-      await fetchUserDailyPlays();
+      await fetchLeaderboards(true);
+      await fetchUserDailyPlays(undefined, true);
     }
     
     setReviewDayIndex(null);
@@ -699,33 +914,7 @@ const App: React.FC = () => {
     setGameState(isMulti ? GameState.RANKING : GameState.RESULTS);
   };
 
-  useEffect(() => {
-    if (gameState !== GameState.QUIZ) return;
-    
-    const interval = setInterval(() => {
-      setTimer(prev => {
-        if (prev <= 1) {
-          handleNextQuestion(null);
-          return SECONDS_PER_QUESTION;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    
-    return () => clearInterval(interval);
-  }, [gameState, currentQuestionIdx, currentPlayerIdx, activeQuestions.length]);
-
-  useEffect(() => {
-    if (gameState !== GameState.COUNTDOWN) return;
-    if (countdown > 0) {
-      const timerId = setTimeout(() => setCountdown(countdown - 1), 1000);
-      return () => clearTimeout(timerId);
-    } else {
-      setGameState(GameState.QUIZ);
-    }
-  }, [gameState, countdown]);
-
-  const initGame = async (mode: 'SOLO' | 'COMP', type: PlayMode) => {
+  const initGame = useCallback(async (mode: 'SOLO' | 'COMP', type: PlayMode) => {
     const idx = type === 'DAILY' ? nextAvailableDay : 0;
     if (type === 'DAILY' && idx < 0) return;
     
@@ -736,9 +925,9 @@ const App: React.FC = () => {
       try {
         const alreadyPlayed = await hasPlayedDailyOnServer(idx);
         if (alreadyPlayed) {
-          setDailyPlayLockMessage(`${idx + 1}. eguna dagoeneko jokatu duzu. Kontu bakoitzak partida bakarra jokatu dezake egunean.`);
-          await fetchLeaderboards();
-          await fetchUserDailyPlays();
+          setDailyPlayLockMessage(`${idx + 1}. eguna dagoeneko jokatu duzu. Kontu bakoitzak saio bakarra jokatu dezake egunean.`);
+          await fetchLeaderboards(true);
+          await fetchUserDailyPlays(undefined, true);
           return;
         }
       } finally {
@@ -759,63 +948,61 @@ const App: React.FC = () => {
       setPlayers([p]);
       setCurrentPlayerIdx(0);
       setCurrentQuestionIdx(0);
-      setTimer(SECONDS_PER_QUESTION);
-      setCountdown(3);
       setGameState(GameState.COUNTDOWN);
     } else {
       setGameState(GameState.PLAYER_SETUP);
     }
-  };
+  }, [
+    nextAvailableDay,
+    isSimulationRun,
+    sequentialSimulationActive,
+    hasPlayedDailyOnServer,
+    fetchLeaderboards,
+    fetchUserDailyPlays,
+    generateQuestions,
+    user?.email
+  ]);
 
-  const saveChallengeStartDate = async () => {
-    if (!isAdmin) return;
+  const saveChallengeStartDate = useCallback(async () => {
+    const adminKey = (user?.email?.split('@')[0] || '').toLowerCase();
+    if (!ADMIN_USERS.includes(adminKey)) return;
     const value = adminStartDateInput.trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return;
     try {
       setSavingAdminConfig(true);
-      const { error } = await supabase
-        .from(GLOBAL_CONFIG_TABLE)
-        .upsert(
-          {
-            config_key: START_DATE_CONFIG_KEY,
-            config_value: value
-          },
-          { onConflict: 'config_key' }
-        );
-      if (error) throw error;
+      await saveGlobalStartDate(GLOBAL_CONFIG_TABLE, START_DATE_CONFIG_KEY, value);
       setChallengeStartDate(value);
+      writeLocalCache(START_DATE_CACHE_KEY, value);
     } catch (err) {
       console.error('Error saving global start date:', err);
     } finally {
       setSavingAdminConfig(false);
     }
-  };
+  }, [adminStartDateInput, user?.email]);
 
-  const resetChallengeStartDate = async () => {
-    if (!isAdmin) return;
+  const resetChallengeStartDate = useCallback(async () => {
+    const adminKey = (user?.email?.split('@')[0] || '').toLowerCase();
+    if (!ADMIN_USERS.includes(adminKey)) return;
     try {
       setSavingAdminConfig(true);
-      const { error } = await supabase
-        .from(GLOBAL_CONFIG_TABLE)
-        .upsert(
-          {
-            config_key: START_DATE_CONFIG_KEY,
-            config_value: DEFAULT_CHALLENGE_START_DATE
-          },
-          { onConflict: 'config_key' }
-        );
-      if (error) throw error;
+      await saveGlobalStartDate(
+        GLOBAL_CONFIG_TABLE,
+        START_DATE_CONFIG_KEY,
+        DEFAULT_CHALLENGE_START_DATE
+      );
       setChallengeStartDate(DEFAULT_CHALLENGE_START_DATE);
       setAdminStartDateInput(DEFAULT_CHALLENGE_START_DATE);
+      removeLocalCache(START_DATE_CACHE_KEY);
     } catch (err) {
       console.error('Error resetting global start date:', err);
     } finally {
       setSavingAdminConfig(false);
     }
-  };
+  }, [user?.email]);
 
-  const startSimulationDay = (idx: number) => {
-    if (!isAdmin) return;
+  const startSimulationDay = useCallback((idx: number) => {
+    const adminKey = (user?.email?.split('@')[0] || '').toLowerCase();
+    if (!ADMIN_USERS.includes(adminKey)) return;
     const clampedIdx = Math.min(Math.max(idx, 0), DAYS_COUNT - 1);
     const qs = generateQuestions('DAILY', clampedIdx);
     if (qs.length === 0) return;
@@ -826,40 +1013,40 @@ const App: React.FC = () => {
     setDayIndex(clampedIdx);
     setActiveQuestions(qs);
 
-    const simPlayerName = userDisplayName || 'SIMULAZIOA';
+    const simPlayerName = (user?.email?.split('@')[0] || 'SIMULAZIOA').toUpperCase();
     setPlayers([{ name: simPlayerName, score: 0, answers: [] }]);
     setCurrentPlayerIdx(0);
     setCurrentQuestionIdx(0);
-    setTimer(SECONDS_PER_QUESTION);
-    setCountdown(3);
     setGameState(GameState.COUNTDOWN);
-  };
+  }, [generateQuestions, user?.email]);
 
-  const startSequentialSimulation = () => {
-    if (!isAdmin) return;
+  const startSequentialSimulation = useCallback(() => {
+    const adminKey = (user?.email?.split('@')[0] || '').toLowerCase();
+    if (!ADMIN_USERS.includes(adminKey)) return;
     setSequentialSimulationActive(true);
     setSequentialSimulationDay(0);
     setSequentialSimulationProgress([]);
     setIsSimulationRun(false);
     setReviewDayIndex(null);
     setGameState(GameState.HOME);
-  };
+  }, [user?.email]);
 
-  const stopSequentialSimulation = () => {
-    if (!isAdmin) return;
+  const stopSequentialSimulation = useCallback(() => {
+    const adminKey = (user?.email?.split('@')[0] || '').toLowerCase();
+    if (!ADMIN_USERS.includes(adminKey)) return;
     setSequentialSimulationActive(false);
     setSequentialSimulationDay(0);
     setSequentialSimulationProgress([]);
     setIsSimulationRun(false);
     setReviewDayIndex(null);
-  };
+  }, [user?.email]);
 
   const getResultFeedback = (score: number, totalQuestions: number) => {
     const total = totalQuestions || QUESTIONS_PER_DAY;
-    if (score === total) return { text: "Zuzenean lekukoa hartzera!", emoji: "👑" };
-    if (score >= total * 0.8) return { text: "Oso ondo! Bihar gehiago.", emoji: "🏃‍♂️" };
-    if (score >= total * 0.5) return { text: "Ertaina. Jarraitu trebatzen.", emoji: "🤝" };
-    return { text: "Bihar saiatu berriz, mesedez.", emoji: "😱" };
+    if (score === total) return { text: "Zuzenean lekukoa hartzera!", emoji: '\u{1F3C6}' };
+    if (score >= total * 0.8) return { text: "Oso ondo! Bihar gehiago.", emoji: '\u{1F3C3}' };
+    if (score >= total * 0.5) return { text: "Ertaina. Jarraitu trebatzen.", emoji: '\u{1F91D}' };
+    return { text: "Bihar saiatu berriz, mesedez.", emoji: '\u{1F622}' };
   };
 
   const filteredSupervisorData = useMemo(() => {
@@ -869,6 +1056,22 @@ const App: React.FC = () => {
 
   const userDisplayName = (user?.email?.split('@')[0] || 'Gonbidatua').toUpperCase();
   const isAdmin = ADMIN_USERS.includes((user?.email?.split('@')[0] || '').toLowerCase());
+  const rankingBasePlayers = useMemo(() => {
+    const list = user?.id ? [...registeredPlayers, userDisplayName] : registeredPlayers;
+    return [...new Set(list.map((name) => name.trim()).filter(Boolean))];
+  }, [registeredPlayers, user?.id, userDisplayName]);
+  const shouldComputeHomeRankings = gameState === GameState.HOME;
+  const generalRanking = useMemo(() => {
+    if (!shouldComputeHomeRankings) return [];
+    return buildRanking(leaderboardRows, rankingBasePlayers);
+  }, [shouldComputeHomeRankings, leaderboardRows, rankingBasePlayers]);
+  const dailyRanking = useMemo(() => {
+    if (!shouldComputeHomeRankings) return [];
+    const dailyRows = leaderboardRows.filter(
+      (row) => Number.isInteger(row.day_index) && row.day_index === selectedDailyLeaderboardDay
+    );
+    return buildRanking(dailyRows);
+  }, [shouldComputeHomeRankings, leaderboardRows, selectedDailyLeaderboardDay]);
   const activeRanking = leaderboardView === 'DAILY' ? dailyRanking : generalRanking;
   const showDailyPlayButton = nextAvailableDay >= 0 || nextAvailableDay === -4 || nextAvailableDay === -1 || nextAvailableDay === -2;
   const dailyPlayButtonDisabled = validatingDailyStart || nextAvailableDay < 0;
@@ -877,697 +1080,419 @@ const App: React.FC = () => {
   const timeUntilStart = Math.max(0, challengeStartTs - effectiveNowTs);
   const activeEdukia = useMemo(() => {
     if (edukiak.length === 0) return null;
-
-    const today = simulationToday ? new Date(simulationToday) : new Date();
-    today.setHours(0, 0, 0, 0);
-    const start = new Date(`${challengeStartDate}T00:00:00`);
-    const elapsedDays = Math.floor((today.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
-    const targetDay = elapsedDays < 0 ? 0 : Math.min(elapsedDays + 1, DAYS_COUNT);
-
+    const targetDay = effectiveNowTs < challengeStartTs ? 0 : Math.min(currentChallengeDayIndex + 1, DAYS_COUNT);
     return edukiak.find((item) => item.day === targetDay) ?? null;
-  }, [edukiak, challengeStartDate, simulationToday]);
+  }, [edukiak, challengeStartTs, currentChallengeDayIndex, effectiveNowTs]);
   const completedDayIndexes = useMemo(
-    () => progress.map((day, idx) => (day?.completed ? idx : -1)).filter((idx) => idx >= 0),
-    [progress]
+    () => effectiveDailyProgress.map((day, idx) => (day?.completed ? idx : -1)).filter((idx) => idx >= 0),
+    [effectiveDailyProgress]
   );
-  const reviewedDay = reviewDayIndex !== null ? progress[reviewDayIndex] : undefined;
+  const reviewedDay = reviewDayIndex !== null ? effectiveDailyProgress[reviewDayIndex] : undefined;
   const resultsAnswers = reviewedDay?.answers ?? (players[0]?.answers ?? []);
   const resultsScore = reviewedDay?.score ?? (players[0]?.score ?? 0);
   const resultsTotal = Math.max(resultsAnswers.length, 1);
-  const resultsFeedback = getResultFeedback(resultsScore, resultsTotal);
+  const resultsFeedback = useMemo(
+    () => getResultFeedback(resultsScore, resultsTotal),
+    [resultsScore, resultsTotal]
+  );
+  const sortedPlayersByScore = useMemo(
+    () => [...players].sort((a, b) => b.score - a.score),
+    [players]
+  );
+  const handleUsernameChange = useCallback((value: string) => {
+    setLoginForm((prev) => ({ ...prev, username: value }));
+  }, []);
+  const handlePasswordChange = useCallback((value: string) => {
+    setLoginForm((prev) => ({ ...prev, password: value }));
+  }, []);
+  const handleTogglePassword = useCallback(() => {
+    setShowPassword((prev) => !prev);
+  }, []);
+  const handleSaveChallengeStartDate = useCallback(() => {
+    void saveChallengeStartDate();
+  }, [saveChallengeStartDate]);
+  const handleResetChallengeStartDate = useCallback(() => {
+    void resetChallengeStartDate();
+  }, [resetChallengeStartDate]);
+  const handleToggleSimulation = useCallback(() => {
+    setSimulationEnabled((prev) => !prev);
+  }, []);
+  const handleStartDailyPlay = useCallback(() => {
+    void initGame('SOLO', 'DAILY');
+  }, [initGame]);
+  const handleReviewDay = useCallback((idx: number) => {
+    setReviewDayIndex(idx);
+    setGameState(GameState.RESULTS);
+  }, []);
+  const handlePlayerNameChange = useCallback((index: number, value: string) => {
+    setTempPlayerNames((prev) => {
+      const next = [...prev];
+      next[index] = value;
+      return next;
+    });
+  }, []);
+  const handleRemovePlayer = useCallback((index: number) => {
+    setTempPlayerNames((prev) => prev.filter((_, idx) => idx !== index));
+  }, []);
+  const handleAddPlayer = useCallback(() => {
+    setTempPlayerNames((prev) => [...prev, `Jokalari ${prev.length + 1}`]);
+  }, []);
+  const handleCancelPlayerSetup = useCallback(() => {
+    setGameState(GameState.HOME);
+  }, []);
+  const handleStartPlayerSetup = useCallback(() => {
+    const pList = tempPlayerNames.map((name) => ({
+      name: name.trim() || 'Izengabea',
+      score: 0,
+      answers: []
+    }));
+    setPlayers(pList);
+    setCurrentPlayerIdx(0);
+    setCurrentQuestionIdx(0);
+    setGameState(GameState.COUNTDOWN);
+  }, [tempPlayerNames]);
+  const handleTurnTransitionReady = useCallback(() => {
+    setCurrentPlayerIdx((prev) => prev + 1);
+    setCurrentQuestionIdx(0);
+    setGameState(GameState.COUNTDOWN);
+  }, []);
+  const handleResultsBack = useCallback(() => {
+    setReviewDayIndex(null);
+    setIsSimulationRun(false);
+    setGameState(GameState.HOME);
+  }, []);
+  const handleGoHome = useCallback(() => {
+    setGameState(GameState.HOME);
+  }, []);
+  useEffect(() => {
+    if (!profilingAutomationEnabled) return;
+    if (autoplayStartedRef.current) return;
+    if (gameState !== GameState.HOME) return;
+    if (quizData.length === 0) return;
+
+    autoplayStartedRef.current = true;
+    startSimulationDay(0);
+  }, [profilingAutomationEnabled, gameState, quizData.length, startSimulationDay]);
+
+  useEffect(() => {
+    if (!profilingAutomationEnabled) return;
+
+    if (gameState === GameState.COUNTDOWN) {
+      const timeoutId = window.setTimeout(() => {
+        handleCountdownComplete();
+      }, 120);
+      return () => window.clearTimeout(timeoutId);
+    }
+
+    if (gameState === GameState.QUIZ && activeQuestions.length > 0) {
+      const currentQuestion = activeQuestions[currentQuestionIdx];
+      if (!currentQuestion) return;
+      if (autoplayQuestionRef.current === currentQuestion.id) return;
+
+      autoplayQuestionRef.current = currentQuestion.id;
+      const optionKey = Object.keys(currentQuestion.opciones)[0] ?? null;
+      const timeoutId = window.setTimeout(() => {
+        handleNextQuestion(optionKey);
+      }, 140);
+      return () => window.clearTimeout(timeoutId);
+    }
+
+    if (gameState === GameState.RESULTS || gameState === GameState.RANKING) {
+      const timeoutId = window.setTimeout(() => {
+        setReviewDayIndex(null);
+        setIsSimulationRun(false);
+        setGameState(GameState.HOME);
+      }, 280);
+      return () => window.clearTimeout(timeoutId);
+    }
+  }, [
+    profilingAutomationEnabled,
+    gameState,
+    activeQuestions,
+    currentQuestionIdx,
+    handleCountdownComplete,
+    handleNextQuestion
+  ]);
+
+  useEffect(() => {
+    if (!profilingEnabled || typeof window === 'undefined') return;
+    (window as Window & { __korrikaProfileRows?: ProfileRow[] }).__korrikaProfileRows = profileRows;
+  }, [profilingEnabled, profileRows]);
+
+  const handleProfilerRender = useCallback<React.ProfilerOnRenderCallback>(
+    (id, _phase, actualDuration) => {
+      if (!profilingEnabled) return;
+
+      const existing = profileStatsRef.current.get(id) ?? {
+        commits: 0,
+        totalActualDuration: 0,
+        maxActualDuration: 0
+      };
+      existing.commits += 1;
+      existing.totalActualDuration += actualDuration;
+      existing.maxActualDuration = Math.max(existing.maxActualDuration, actualDuration);
+      profileStatsRef.current.set(id, existing);
+    },
+    [profilingEnabled]
+  );
+  useEffect(() => {
+    if (!profilingEnabled) {
+      setProfileRows([]);
+      profileStatsRef.current.clear();
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      const rows = [...profileStatsRef.current.entries()]
+        .map(([id, stats]) => ({
+          id,
+          commits: stats.commits,
+          totalMs: Number(stats.totalActualDuration.toFixed(4)),
+          avgMs: Number((stats.totalActualDuration / Math.max(stats.commits, 1)).toFixed(4)),
+          maxMs: Number(stats.maxActualDuration.toFixed(4))
+        }))
+        .sort((a, b) => b.totalMs - a.totalMs)
+        .slice(0, 3);
+      setProfileRows((prev) => {
+        if (
+          prev.length === rows.length &&
+          prev.every((row, idx) => {
+            const candidate = rows[idx];
+            return (
+              row.id === candidate.id &&
+              row.commits === candidate.commits &&
+              row.totalMs === candidate.totalMs &&
+              row.avgMs === candidate.avgMs &&
+              row.maxMs === candidate.maxMs
+            );
+          })
+        ) {
+          return prev;
+        }
+        return rows;
+      });
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [profilingEnabled]);
+  const renderWithProfiler = useCallback(
+    (id: string, node: React.ReactElement) => {
+      if (!profilingEnabled) return node;
+      return (
+        <React.Profiler id={id} onRender={handleProfilerRender}>
+          {node}
+        </React.Profiler>
+      );
+    },
+    [profilingEnabled, handleProfilerRender]
+  );
 
   if ((loadingAuth || loadingData) && (gameState === GameState.AUTH || gameState === GameState.HOME)) {
     return (
-      <div className="fixed inset-0 flex items-center justify-center bg-gray-50 flex-col gap-4">
-        <div className="animate-spin rounded-full h-12 w-12 border-4 border-pink-500 border-t-transparent"></div>
-        <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest animate-pulse">Datuak kargatzen...</p>
+      <div className="min-h-[100dvh] w-full flex items-center justify-center bg-gray-50 flex-col gap-4 px-4">
+        <div className="animate-spin rounded-full h-10 w-10 sm:h-12 sm:w-12 border-4 border-pink-500 border-t-transparent"></div>
+        <p className="text-[11px] sm:text-xs font-black uppercase text-gray-400 tracking-widest animate-pulse">Datuak kargatzen...</p>
       </div>
     );
   }
 
   return (
-    <div className={`fixed inset-0 flex flex-col bg-gray-50 text-gray-800 ${gameState !== GameState.AUTH ? 'overflow-hidden' : 'overflow-auto'}`}>
-      <header className="w-full korrika-bg-gradient p-4 text-white shadow-md flex flex-col items-center flex-shrink-0 z-10 relative">
+    <div className={`min-h-[100dvh] w-full flex flex-col bg-gray-50 text-gray-800 safe-pt safe-pb safe-pl safe-pr ${gameState !== GameState.AUTH ? 'overflow-x-hidden overflow-y-hidden' : 'overflow-auto'}`}>
+      <header className="w-full korrika-bg-gradient px-3 py-3 sm:px-4 sm:py-4 text-white shadow-md flex flex-col items-center flex-shrink-0 z-10">
         {user && gameState !== GameState.AUTH && (
-          <>
+          <div className="w-full max-w-5xl mx-auto flex items-center justify-between gap-2 mb-2 sm:mb-3">
             <button
               onClick={handleLogout}
-              className="absolute left-4 top-4 rounded-full bg-white/20 px-3 py-1.5 text-[9px] font-black uppercase tracking-wide hover:bg-white/30 transition-colors"
+              className="rounded-full bg-white/20 px-3 py-2 sm:px-3.5 text-[10px] font-black uppercase tracking-wide hover:bg-white/30 transition-colors whitespace-nowrap"
             >
-              🚪 Irten
+              Irten
             </button>
-            <div className="absolute right-4 top-4 rounded-full bg-white/20 px-3 py-1.5 text-[9px] font-black uppercase tracking-wide">
-              👤 {userDisplayName}
+            <div className="rounded-full bg-white/20 px-3 py-2 sm:px-3.5 text-[10px] font-black uppercase tracking-wide max-w-[60%] truncate text-center">
+              {userDisplayName}
             </div>
-          </>
+          </div>
         )}
-        <h1 className="text-2xl font-black tracking-tighter uppercase italic flex items-center gap-2">
-          <span>🏃‍♀️</span> KORRIKA
+        <h1 className="text-[clamp(1.3rem,5vw,2.1rem)] font-black tracking-tight uppercase italic flex items-center gap-2">
+          <span aria-hidden>{'\u{1F3C3}'}</span> KORRIKA
         </h1>
-        <p className="text-[9px] font-bold opacity-80 uppercase tracking-widest">{DAYS_COUNT} EGUNEKO ERRONKA</p>
+        <p className="text-[10px] sm:text-[11px] font-bold opacity-80 uppercase tracking-[0.2em] text-center">
+          {DAYS_COUNT} EGUNEKO ERRONKA
+        </p>
       </header>
 
-      <main className="flex-1 w-full max-w-2xl mx-auto px-4 flex flex-col overflow-hidden relative">
+      <main className="flex-1 w-full max-w-5xl mx-auto px-2 sm:px-4 lg:px-6 flex flex-col overflow-hidden relative">
         
         {gameState === GameState.AUTH && (
-          <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-8 animate-in fade-in zoom-in-95">
-             <div className="bg-white p-8 rounded-[3rem] shadow-2xl border border-gray-100 w-full max-w-sm">
-                <div className="text-center mb-6">
-                  <h2 className="text-2xl font-black uppercase italic korrika-pink">Sartu Lekukoan</h2>
-                  <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-1">Erabiltzaile kodea behar duzu</p>
-                </div>
-                
-                <form onSubmit={handleLogin} className="space-y-4">
-                  <div>
-                    <label className="text-[9px] font-black uppercase text-gray-400 ml-2 mb-1 block">Erabiltzailea (k_XXXX)</label>
-                    <input 
-                      type="text" 
-                      required
-                      value={loginForm.username}
-                      onChange={(e) => setLoginForm({...loginForm, username: e.target.value})}
-                      placeholder="k_0001"
-                      className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-5 py-3 font-bold text-gray-700 focus:border-pink-300 outline-none transition-all"
-                    />
-                  </div>
-                  <div className="relative">
-                    <label className="text-[9px] font-black uppercase text-gray-400 ml-2 mb-1 block">Pasahitza</label>
-                    <input 
-                      type={showPassword ? "text" : "password"}
-                      required
-                      value={loginForm.password}
-                      onChange={(e) => setLoginForm({...loginForm, password: e.target.value})}
-                      placeholder="••••••••"
-                      className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-5 py-3 font-bold text-gray-700 focus:border-pink-300 outline-none transition-all pr-12"
-                    />
-                    <button 
-                      type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-4 bottom-3.5 text-gray-400 hover:text-pink-500 transition-colors"
-                    >
-                      <i className={`fas ${showPassword ? 'fa-eye-slash' : 'fa-eye'}`}></i>
-                    </button>
-                  </div>
-                  {loginError && (
-                    <div className="bg-red-50 p-3 rounded-xl border border-red-100 animate-pulse">
-                      <p className="text-[10px] text-red-500 font-bold text-center leading-tight">
-                        {loginError}
-                      </p>
-                    </div>
-                  )}
-                  <button 
-                    disabled={loadingAuth}
-                    type="submit" 
-                    className="w-full korrika-bg-gradient text-white py-4 rounded-2xl font-black uppercase italic shadow-lg active:scale-95 transition-all disabled:opacity-50"
-                  >
-                    {loadingAuth ? 'Sartzen...' : 'SARTU'}
-                  </button>
-                </form>
-
-             </div>
-             <p className="text-[9px] font-black text-gray-300 uppercase">AEK - EUSKARA BIZIRIK</p>
-          </div>
+          renderWithProfiler(
+            'AuthScreen',
+            <AuthScreen
+              username={loginForm.username}
+              password={loginForm.password}
+              showPassword={showPassword}
+              loginError={loginError}
+              loadingAuth={loadingAuth}
+              onSubmit={handleLogin}
+              onUsernameChange={handleUsernameChange}
+              onPasswordChange={handlePasswordChange}
+              onTogglePassword={handleTogglePassword}
+            />
+          )
         )}
 
         {gameState === GameState.HOME && (
-          <div className="flex-1 flex flex-col items-center justify-start space-y-4 animate-in fade-in zoom-in-95 duration-500 pt-3 pb-6 overflow-y-auto">
-            <div className="w-full flex flex-col items-center space-y-4">
-              <section className="w-full px-4">
-                <div className="rounded-2xl border border-gray-200 bg-white shadow-sm p-4">
-                  {loadingEdukiak ? (
-                    <p className="text-[10px] font-bold uppercase tracking-wide text-gray-400">Edukia kargatzen...</p>
-                  ) : activeEdukia ? (
-                    <div>
-                      <p className="text-[9px] font-black uppercase tracking-[0.18em] text-pink-500">Eguneko edukia</p>
-                      <h3 className="text-sm font-black text-gray-800 mt-1">{activeEdukia.title}</h3>
-                      <p className="text-[12px] leading-relaxed text-gray-600 mt-2">{activeEdukia.content}</p>
-                    </div>
-                  ) : (
-                    <p className="text-[11px] font-bold text-gray-400">Ez dago edukirik egun honetarako.</p>
-                  )}
-                </div>
-              </section>
-
-              {isAdmin && (
-                <section className="w-full px-4">
-                  <div className="rounded-2xl border border-amber-200 bg-amber-50/60 shadow-sm p-4 space-y-3">
-                    <p className="text-[10px] font-black uppercase tracking-[0.15em] text-amber-700">Admin panela</p>
-
-                    <div className="rounded-xl bg-white border border-amber-100 p-3 space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-[10px] font-black uppercase text-amber-700">Simulazio sekuentziala</p>
-                        <span className={`text-[10px] font-black uppercase ${sequentialSimulationActive ? 'text-emerald-700' : 'text-gray-500'}`}>
-                          {sequentialSimulationActive ? `Eguna ${Math.min(sequentialSimulationDay + 1, DAYS_COUNT)}` : 'Itzalita'}
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          onClick={startSequentialSimulation}
-                          className="rounded-xl bg-emerald-600 text-white px-3 py-2 text-[10px] font-black uppercase"
-                        >
-                          Hasi simulazioa
-                        </button>
-                        <button
-                          onClick={stopSequentialSimulation}
-                          className="rounded-xl bg-white border border-amber-200 text-amber-700 px-3 py-2 text-[10px] font-black uppercase"
-                        >
-                          Gelditu
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-[1fr_auto_auto] gap-2 items-center">
-                      <input
-                        type="date"
-                        value={adminStartDateInput}
-                        onChange={(e) => setAdminStartDateInput(e.target.value)}
-                        className="bg-white border border-amber-200 rounded-xl px-3 py-2 text-[11px] font-bold text-gray-700 outline-none"
-                      />
-                      <button
-                        onClick={() => void saveChallengeStartDate()}
-                        disabled={savingAdminConfig}
-                        className="rounded-xl bg-amber-500 text-white px-3 py-2 text-[10px] font-black uppercase disabled:opacity-60 disabled:cursor-not-allowed"
-                      >
-                        {savingAdminConfig ? 'Gordetzen...' : 'Gorde'}
-                      </button>
-                      <button
-                        onClick={() => void resetChallengeStartDate()}
-                        disabled={savingAdminConfig}
-                        className="rounded-xl bg-white border border-amber-200 text-amber-700 px-3 py-2 text-[10px] font-black uppercase disabled:opacity-60 disabled:cursor-not-allowed"
-                      >
-                        Berrezarri
-                      </button>
-                    </div>
-
-                    <div className="rounded-xl bg-white border border-amber-100 p-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="text-[10px] font-black uppercase text-amber-700">Simulazioa</p>
-                        <button
-                          onClick={() => setSimulationEnabled((prev) => !prev)}
-                          className={`rounded-full px-3 py-1 text-[10px] font-black uppercase ${
-                            simulationEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'
-                          }`}
-                        >
-                          {simulationEnabled ? 'Aktibatuta' : 'Desaktibatuta'}
-                        </button>
-                      </div>
-
-                      {simulationEnabled && (
-                        <div className="mt-2 grid grid-cols-[1fr_auto] gap-2">
-                          <select
-                            value={simulationDayIndex}
-                            onChange={(e) => setSimulationDayIndex(Number(e.target.value))}
-                            className="bg-white border border-amber-200 rounded-xl px-3 py-2 text-[11px] font-bold text-gray-700 outline-none"
-                          >
-                            {Array.from({ length: DAYS_COUNT }).map((_, i) => (
-                              <option key={`sim-day-${i}`} value={i}>
-                                {i + 1}. eguna
-                              </option>
-                            ))}
-                          </select>
-                          <button
-                            onClick={() => startSimulationDay(simulationDayIndex)}
-                            className="rounded-xl bg-gray-800 text-white px-3 py-2 text-[10px] font-black uppercase"
-                          >
-                            Probatu
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </section>
-              )}
-
-              {showDailyPlayButton ? (
-                <div className="flex flex-col gap-3 w-full px-8">
-                  <button
-                    onClick={() => void initGame('SOLO', 'DAILY')}
-                    disabled={dailyPlayButtonDisabled}
-                    className="korrika-bg-gradient text-white py-4 rounded-2xl font-black text-lg uppercase italic shadow-lg hover:scale-[1.02] transition-all active:scale-95 border-2 border-white/20 disabled:opacity-70 disabled:scale-100 disabled:cursor-not-allowed"
-                  >
-                    {validatingDailyStart
-                      ? 'Egiaztatzen...'
-                      : nextAvailableDay === -4
-                      ? `Jolastu aktibatuko da: ${formatCountdown(timeUntilStart)}`
-                      : nextAvailableDay === -1 || nextAvailableDay === -2
-                      ? 'Gaurko partida eginda'
-                      : `Jolastu (${nextAvailableDay + 1}. Eguna)`}
-                  </button>
-                  {dailyPlayLockMessage && (
-                    <p className="text-[10px] font-bold text-red-500 text-center bg-red-50 border border-red-100 rounded-xl px-3 py-2">
-                      {dailyPlayLockMessage}
-                    </p>
-                  )}
-                  {!dailyPlayLockMessage && (nextAvailableDay === -1 || nextAvailableDay === -2) && (
-                    <p className="text-[10px] font-bold text-gray-500 text-center">Bihar berriz jokatu ahal izango duzu.</p>
-                  )}
-                </div>
-              ) : (
-                <div className="bg-white px-8 py-4 rounded-3xl shadow-md border border-gray-100 flex flex-col items-center text-center gap-2 w-full max-w-xs mx-auto">
-                  <div className="text-3xl">
-                    {nextAvailableDay === -4
-                      ? '📅'
-                      : nextAvailableDay === -1
-                        ? '🔒'
-                        : nextAvailableDay === -2
-                          ? '⏳'
-                          : '👏'}
-                  </div>
-                  <h2 className="text-sm font-black uppercase italic text-gray-800">
-                    {nextAvailableDay === -4
-                      ? 'Erronka hasi gabe'
-                      : nextAvailableDay === -1
-                        ? 'Bihar saiatu'
-                        : nextAvailableDay === -2
-                          ? 'Bihar arte!'
-                          : 'Erronka Amaituta'}
-                  </h2>
-                  {(nextAvailableDay === -3 || nextAvailableDay === -5) && (
-                    <p className="text-[10px] font-bold text-gray-500">Eskerrik asko parte hartzeagatik.</p>
-                  )}
-                </div>
-              )}
-
-              {completedDayIndexes.length > 0 && (
-                <section className="w-full px-4">
-                  <div className="rounded-2xl border border-gray-200 bg-white shadow-sm p-4">
-                    <p className="text-[10px] font-black uppercase tracking-[0.15em] text-gray-500 mb-2">
-                      Aurreko egunetako emaitzak
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      {completedDayIndexes.map((idx) => (
-                        <button
-                          key={`review-day-${idx}`}
-                          onClick={() => {
-                            setReviewDayIndex(idx);
-                            setGameState(GameState.RESULTS);
-                          }}
-                          className="rounded-full border border-pink-200 bg-pink-50 px-3 py-1.5 text-[10px] font-black uppercase text-pink-700 hover:bg-pink-100 transition-colors"
-                        >
-                          {idx + 1}. eguna
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </section>
-              )}
-            </div>
-
-            <section className="w-full px-4">
-              <div className="rounded-[1.5rem] border border-gray-200 bg-white shadow-lg overflow-hidden">
-                <div className="korrika-bg-gradient p-4 text-white">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <h3 className="text-sm font-black uppercase">Sailkapena</h3>
-                    </div>
-                    {loadingRanking && (
-                      <span className="rounded-full bg-white/20 px-2.5 py-1 text-[9px] font-black uppercase tracking-wider">
-                        Kargatzen
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="mt-3 grid grid-cols-2 gap-2 rounded-2xl bg-white/15 p-1">
-                    <button
-                      onClick={() => setLeaderboardView('DAILY')}
-                      className={`rounded-xl py-2 text-[10px] font-black uppercase transition-all ${
-                        leaderboardView === 'DAILY' ? 'bg-white text-pink-600 shadow-sm' : 'text-white/80 hover:text-white'
-                      }`}
-                    >
-                      Egunekoa
-                    </button>
-                    <button
-                      onClick={() => setLeaderboardView('GENERAL')}
-                      className={`rounded-xl py-2 text-[10px] font-black uppercase transition-all ${
-                        leaderboardView === 'GENERAL' ? 'bg-white text-pink-600 shadow-sm' : 'text-white/80 hover:text-white'
-                      }`}
-                    >
-                      Orokorra
-                    </button>
-                  </div>
-
-                  {leaderboardView === 'DAILY' && (
-                    <div className="mt-3">
-                      <label className="block text-[9px] font-black uppercase tracking-wider text-white/80 mb-1">
-                        Eguna
-                      </label>
-                      <select
-                        value={selectedDailyLeaderboardDay}
-                        onChange={(e) => setSelectedDailyLeaderboardDay(Number(e.target.value))}
-                        className="w-full rounded-xl border border-white/30 bg-white/90 text-pink-700 px-3 py-2 text-[11px] font-black outline-none"
-                      >
-                        {Array.from({ length: DAYS_COUNT }, (_, idx) => (
-                          <option key={`leaderboard-day-${idx}`} value={idx}>
-                            {idx + 1}. eguna
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-                </div>
-
-                <div className="p-4">
-                  {activeRanking.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center">
-                      <p className="text-[10px] font-bold text-gray-400">
-                        {leaderboardView === 'DAILY'
-                          ? `Ez dago ${selectedDailyLeaderboardDay + 1}. eguneko emaitzarik oraindik.`
-                          : 'Oraindik ez dago rankingerako daturik.'}
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      {activeRanking.slice(0, 5).map((entry, idx) => (
-                        <article
-                          key={`${leaderboardView}-${entry.playerName}`}
-                          className="flex items-center justify-between rounded-xl border border-gray-100 px-3 py-2.5"
-                        >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <span
-                              className={`w-8 h-8 rounded-lg flex items-center justify-center text-[11px] font-black ${
-                                idx === 0
-                                  ? 'bg-yellow-100 text-yellow-700'
-                                  : idx === 1
-                                    ? 'bg-slate-200 text-slate-700'
-                                    : idx === 2
-                                      ? 'bg-amber-100 text-amber-700'
-                                      : 'bg-gray-100 text-gray-500'
-                              }`}
-                            >
-                              {idx + 1}
-                            </span>
-                            <div className="min-w-0">
-                              <p className="text-[12px] font-black text-gray-800 truncate">{entry.playerName}</p>
-                              {leaderboardView === 'GENERAL' && (
-                                <p className="text-[9px] font-bold uppercase text-gray-400">
-                                  {entry.games} {entry.games === 1 ? 'partida' : 'partidak'}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                          <p className="text-sm font-black text-pink-600">{entry.points} pt</p>
-                        </article>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </section>
-
-          </div>
+          renderWithProfiler(
+            'HomeScreen',
+            <HomeScreen
+              loadingEdukiak={loadingEdukiak}
+              activeEdukia={activeEdukia}
+              isAdmin={isAdmin}
+              sequentialSimulationActive={sequentialSimulationActive}
+              sequentialSimulationDay={sequentialSimulationDay}
+              daysCount={DAYS_COUNT}
+              onStartSequentialSimulation={startSequentialSimulation}
+              onStopSequentialSimulation={stopSequentialSimulation}
+              adminStartDateInput={adminStartDateInput}
+              onAdminStartDateInputChange={setAdminStartDateInput}
+              onSaveChallengeStartDate={handleSaveChallengeStartDate}
+              onResetChallengeStartDate={handleResetChallengeStartDate}
+              savingAdminConfig={savingAdminConfig}
+              simulationEnabled={simulationEnabled}
+              onToggleSimulation={handleToggleSimulation}
+              simulationDayIndex={simulationDayIndex}
+              onSimulationDayIndexChange={setSimulationDayIndex}
+              dayOptions={DAY_OPTIONS}
+              onStartSimulationDay={startSimulationDay}
+              showDailyPlayButton={showDailyPlayButton}
+              onStartDailyPlay={handleStartDailyPlay}
+              dailyPlayButtonDisabled={dailyPlayButtonDisabled}
+              validatingDailyStart={validatingDailyStart}
+              nextAvailableDay={nextAvailableDay}
+              timeUntilStart={timeUntilStart}
+              formatCountdown={formatCountdown}
+              dailyPlayLockMessage={dailyPlayLockMessage}
+              completedDayIndexes={completedDayIndexes}
+              onReviewDay={handleReviewDay}
+              loadingRanking={loadingRanking}
+              leaderboardView={leaderboardView}
+              onLeaderboardViewChange={setLeaderboardView}
+              selectedDailyLeaderboardDay={selectedDailyLeaderboardDay}
+              onSelectedDailyLeaderboardDayChange={setSelectedDailyLeaderboardDay}
+              activeRanking={activeRanking}
+            />
+          )
         )}
 
         {gameState === GameState.PLAYER_SETUP && (
-          <div className="flex-1 flex flex-col p-6 space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
-            <div className="text-center">
-              <h2 className="text-xl font-black uppercase italic korrika-pink">Jokalariak Gehitu</h2>
-            </div>
-            <div className="space-y-2 flex-1 overflow-auto">
-              {tempPlayerNames.map((name, i) => (
-                <div key={i} className="flex gap-2">
-                  <input type="text" value={name} onChange={(e) => { const n = [...tempPlayerNames]; n[i] = e.target.value; setTempPlayerNames(n); }} className="flex-1 bg-white border-2 border-gray-100 rounded-xl px-4 py-3 text-sm font-bold focus:border-pink-300 outline-none" placeholder={`Jokalari ${i+1}...`} />
-                  {tempPlayerNames.length > 2 && (
-                    <button onClick={() => setTempPlayerNames(tempPlayerNames.filter((_, idx) => idx !== i))} className="bg-red-50 text-red-500 w-12 rounded-xl border border-red-100">✕</button>
-                  )}
-                </div>
-              ))}
-              {tempPlayerNames.length < 4 && (
-                <button onClick={() => setTempPlayerNames([...tempPlayerNames, `Jokalari ${tempPlayerNames.length + 1}`])} className="w-full py-3 border-2 border-dashed border-gray-200 rounded-xl text-gray-400 font-bold text-xs uppercase">+ Gehitu</button>
-              )}
-            </div>
-            <div className="flex gap-2">
-              <button onClick={() => setGameState(GameState.HOME)} className="flex-1 bg-gray-200 py-4 rounded-2xl font-black text-xs uppercase">Utzi</button>
-              <button onClick={() => {
-                const pList = tempPlayerNames.map(n => ({ name: n.trim() || 'Izengabea', score: 0, answers: [] }));
-                setPlayers(pList);
-                setCurrentPlayerIdx(0);
-                setCurrentQuestionIdx(0);
-                setTimer(SECONDS_PER_QUESTION);
-                setCountdown(3);
-                setGameState(GameState.COUNTDOWN);
-              }} className="flex-[2] korrika-bg-gradient text-white py-4 rounded-2xl font-black text-xs uppercase">Hasi</button>
-            </div>
-          </div>
+          renderWithProfiler(
+            'PlayerSetupScreen',
+            <PlayerSetupScreen
+              tempPlayerNames={tempPlayerNames}
+              onPlayerNameChange={handlePlayerNameChange}
+              onRemovePlayer={handleRemovePlayer}
+              onAddPlayer={handleAddPlayer}
+              onCancel={handleCancelPlayerSetup}
+              onStart={handleStartPlayerSetup}
+            />
+          )
         )}
 
         {gameState === GameState.COUNTDOWN && (
-          <div className="flex-1 flex flex-col items-center justify-center text-center">
-            <div className="text-pink-500 font-black uppercase tracking-widest text-sm mb-4">{players[currentPlayerIdx].name} prest?</div>
-            <div className="text-[10rem] font-black korrika-pink animate-bounce">{countdown === 0 ? '🏁' : countdown}</div>
-          </div>
+          renderWithProfiler(
+            'CountdownScreen',
+            <CountdownScreen
+              playerName={players[currentPlayerIdx]?.name ?? 'Jokalaria'}
+              onComplete={handleCountdownComplete}
+            />
+          )
         )}
 
         {gameState === GameState.QUIZ && activeQuestions.length > 0 && (
-          <div className="flex-1 flex flex-col py-4 space-y-4 overflow-hidden">
-             <div className="flex justify-between items-center">
-                <div className="flex-1">
-                  <div className="flex justify-between items-end mb-1">
-                     <span className="text-[9px] font-black uppercase text-pink-500 truncate w-32">{players[currentPlayerIdx].name}</span>
-                     <span className="text-[8px] font-bold text-gray-400 uppercase">{activeQuestions[currentQuestionIdx].categoryName}</span>
-                  </div>
-                  <div className="flex gap-1">
-                    {Array.from({ length: activeQuestions.length }).map((_, i) => (
-                      <div key={i} className={`h-1.5 flex-1 rounded-full ${i === currentQuestionIdx ? 'korrika-bg-pink' : i < currentQuestionIdx ? 'bg-green-400' : 'bg-gray-200'}`} />
-                    ))}
-                  </div>
-                </div>
-                <div className="w-12 h-12 ml-4 flex items-center justify-center bg-white rounded-full shadow-md text-xs font-black">
-                  {timer}
-                </div>
-             </div>
-             <div className="flex-1 bg-white rounded-3xl p-6 shadow-xl border border-gray-100 flex flex-col min-h-0">
-                <div className="mb-4">
-                  <h3 className="text-lg font-bold text-gray-800 italic">"{activeQuestions[currentQuestionIdx].pregunta}"</h3>
-                </div>
-                <div className="flex-1 grid grid-rows-4 gap-2">
-                  {Object.entries(activeQuestions[currentQuestionIdx].opciones).map(([key, value]) => (
-                    <button key={key} onClick={() => handleNextQuestion(key)} className="w-full text-left px-4 py-3 rounded-xl border-2 border-gray-100 active:scale-95 transition-all flex items-center gap-3">
-                      <span className="w-9 h-9 rounded bg-gray-100 flex items-center justify-center font-black text-gray-400 text-sm">{key.toUpperCase()}</span>
-                      <span className="font-bold text-gray-700 text-base">{value}</span>
-                    </button>
-                  ))}
-                </div>
-             </div>
-          </div>
+          renderWithProfiler(
+            'QuizScreen',
+            <QuizScreen
+              playerName={players[currentPlayerIdx]?.name ?? 'Jokalaria'}
+              question={activeQuestions[currentQuestionIdx]}
+              questionIndex={currentQuestionIdx}
+              totalQuestions={activeQuestions.length}
+              onAnswer={handleNextQuestion}
+              timerKey={`${currentPlayerIdx}-${currentQuestionIdx}`}
+              secondsPerQuestion={SECONDS_PER_QUESTION}
+            />
+          )
         )}
 
         {gameState === GameState.TURN_TRANSITION && (
-          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-6 animate-in fade-in zoom-in-95 duration-300">
-             <div className="bg-white rounded-[2.5rem] p-10 shadow-2xl">
-                <h2 className="text-2xl font-black korrika-pink uppercase italic mb-6">Txandakoa!</h2>
-                {currentPlayerIdx < players.length && (
-                  <div className="space-y-6">
-                     <p className="text-xl font-black text-gray-800">{players[currentPlayerIdx].name}</p>
-                     <div className="text-6xl mb-4">👇</div>
-                     <button 
-                       onClick={() => {
-                         setCurrentPlayerIdx(prev => prev + 1);
-                         setCurrentQuestionIdx(0);
-                         setTimer(SECONDS_PER_QUESTION);
-                         setCountdown(3);
-                         setGameState(GameState.COUNTDOWN);
-                       }}
-                       className="korrika-bg-gradient text-white px-8 py-4 rounded-2xl font-black uppercase text-xs"
-                     >
-                       Prest
-                     </button>
-                  </div>
-                )}
-             </div>
-          </div>
+          renderWithProfiler(
+            'TurnTransitionScreen',
+            <TurnTransitionScreen
+              playerName={currentPlayerIdx < players.length ? players[currentPlayerIdx].name : null}
+              onReady={handleTurnTransitionReady}
+            />
+          )
         )}
 
         {gameState === GameState.RESULTS && (
-          <div className="flex-1 overflow-auto py-6 space-y-4">
-            <div className="rounded-[2rem] p-5 text-white shadow-xl korrika-bg-gradient">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/80">
-                    {isSimulationRun
-                      ? 'Simulazio emaitza'
-                      : reviewDayIndex !== null
-                        ? `${reviewDayIndex + 1}. eguneko emaitza`
-                        : 'Azken Emaitza'}
-                  </p>
-                  <h2 className="text-2xl font-black italic mt-1">{resultsFeedback.text}</h2>
-                </div>
-                <div className="text-5xl leading-none">{resultsFeedback.emoji}</div>
-              </div>
-              <div className="mt-5 bg-white/20 rounded-2xl p-4 backdrop-blur-sm border border-white/20">
-                <div className="flex items-end justify-between">
-                  <p className="text-4xl font-black">
-                    {resultsScore}
-                    <span className="text-lg font-bold text-white/80"> / {resultsTotal}</span>
-                  </p>
-                  <p className="text-xs uppercase font-black tracking-widest text-white/80">
-                    {Math.round(((resultsScore || 0) / Math.max(resultsTotal, 1)) * 100)}% asmatuak
-                  </p>
-                </div>
-                <div className="mt-3 h-2 rounded-full bg-white/25 overflow-hidden">
-                  <div
-                    className="h-full bg-white rounded-full transition-all"
-                    style={{ width: `${((resultsScore || 0) / Math.max(resultsTotal, 1)) * 100}%` }}
-                  />
-                </div>
-              </div>
-              <button
-                onClick={() => {
-                  setReviewDayIndex(null);
-                  setIsSimulationRun(false);
-                  setGameState(GameState.HOME);
-                }}
-                className="mt-5 w-full bg-white text-pink-600 py-3 rounded-2xl font-black uppercase text-xs shadow-md active:scale-95 transition-all"
-              >
-                Itzuli
-              </button>
-            </div>
-
-            <div className="bg-white rounded-[1.75rem] p-4 shadow-md border border-gray-100">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-base font-black uppercase tracking-wide text-gray-700">Erantzunen Xehetasuna</h3>
-                <span className="text-xs font-black uppercase text-gray-400">
-                  {resultsAnswers.length} galdera
-                </span>
-              </div>
-              <div className="space-y-3">
-                {resultsAnswers.map((answer, idx) => {
-                  const selectedKey = answer.selectedOption;
-                  const correctKey = answer.question.respuesta_correcta;
-                  const selectedText = selectedKey ? answer.question.opciones[selectedKey] : null;
-                  const correctText = answer.question.opciones[correctKey];
-
-                  return (
-                    <article
-                      key={`${answer.question.id}-${idx}`}
-                      className={`rounded-2xl border p-4 ${
-                        answer.isCorrect
-                          ? 'border-emerald-100 bg-emerald-50/50'
-                          : 'border-rose-100 bg-rose-50/50'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3 mb-2">
-                        <p className="text-[13px] font-black text-gray-700 leading-snug">
-                          {idx + 1}. {answer.question.pregunta}
-                        </p>
-                        <span
-                          className={`text-[11px] font-black uppercase px-2 py-1 rounded-full whitespace-nowrap ${
-                            answer.isCorrect
-                              ? 'bg-emerald-100 text-emerald-700'
-                              : 'bg-rose-100 text-rose-700'
-                          }`}
-                        >
-                          {answer.isCorrect ? 'Zuzena' : 'Okerra'}
-                        </span>
-                      </div>
-
-                      <div className="grid gap-2">
-                        <div className="rounded-xl border border-gray-100 bg-white px-3 py-2">
-                          <p className="text-[10px] font-black uppercase text-gray-400 mb-1">Zure aukera</p>
-                          <p className={`text-[13px] font-bold ${answer.isCorrect ? 'text-emerald-700' : 'text-rose-700'}`}>
-                            {selectedKey ? `${selectedKey.toUpperCase()}) ${selectedText}` : 'Erantzun gabe'}
-                          </p>
-                        </div>
-                        <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2">
-                          <p className="text-[10px] font-black uppercase text-emerald-600/70 mb-1">Erantzun zuzena</p>
-                          <p className="text-[13px] font-black text-emerald-700">
-                            {`${correctKey.toUpperCase()}) ${correctText}`}
-                          </p>
-                        </div>
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
+          renderWithProfiler(
+            'ResultsScreen',
+            <ResultsScreen
+              isSimulationRun={isSimulationRun}
+              reviewDayIndex={reviewDayIndex}
+              resultsFeedback={resultsFeedback}
+              resultsScore={resultsScore}
+              resultsTotal={resultsTotal}
+              resultsAnswers={resultsAnswers}
+              onBack={handleResultsBack}
+            />
+          )
         )}
 
         {gameState === GameState.RANKING && (
-          <div className="flex-1 overflow-auto py-6 space-y-4">
-             <div className="text-center mb-6">
-                <h2 className="text-2xl font-black korrika-pink uppercase italic">🏆 Sailkapena</h2>
-             </div>
-             <div className="space-y-3 px-4">
-                {[...players]
-                  .sort((a, b) => b.score - a.score)
-                  .map((player, idx) => (
-                    <div key={idx} className="bg-white rounded-2xl p-4 shadow-md border border-gray-100 flex items-center justify-between">
-                       <div className="flex items-center gap-3">
-                         <div className="text-2xl font-black text-gray-300 w-8 text-center">
-                           {idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `${idx + 1}.`}
-                         </div>
-                         <div>
-                           <p className="font-black text-gray-800">{player.name}</p>
-                           <p className="text-[10px] text-gray-400 font-bold">{player.score} puntu</p>
-                         </div>
-                       </div>
-                       <div className="text-3xl font-black korrika-pink">{player.score}</div>
-                    </div>
-                  ))}
-             </div>
-             <div className="flex gap-2 mt-6 px-4">
-                <button onClick={() => setGameState(GameState.HOME)} className="flex-1 korrika-bg-gradient text-white py-4 rounded-2xl font-black uppercase text-xs">Itzuli</button>
-             </div>
-          </div>
+          renderWithProfiler(
+            'RankingScreen',
+            <RankingScreen
+              sortedPlayersByScore={sortedPlayersByScore}
+              onBack={handleGoHome}
+            />
+          )
         )}
 
         {gameState === GameState.SUPERVISOR && (
-          <div className="flex-1 overflow-auto py-6 space-y-4">
-             <div className="mb-4">
-                <div className="flex justify-between items-center mb-4">
-                   <h2 className="text-xl font-black korrika-pink uppercase italic">📚 Galderak</h2>
-                   <button onClick={() => setGameState(GameState.HOME)} className="bg-gray-800 text-white px-4 py-2 rounded-full font-black text-[9px] uppercase">Itzuli</button>
-                </div>
-                <div className="flex gap-2 flex-wrap">
-                   <button
-                     onClick={() => setSupervisorCategory('GUZTIAK')}
-                     className={`px-4 py-2 rounded-full font-black text-[9px] uppercase transition-all ${
-                       supervisorCategory === 'GUZTIAK'
-                         ? 'korrika-bg-gradient text-white'
-                         : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                     }`}
-                   >
-                     GUZTIAK
-                   </button>
-                   {quizData.map(cat => (
-                     <button
-                       key={cat.capitulo}
-                       onClick={() => setSupervisorCategory(cat.capitulo)}
-                       className={`px-4 py-2 rounded-full font-black text-[9px] uppercase transition-all ${
-                         supervisorCategory === cat.capitulo
-                           ? 'korrika-bg-gradient text-white'
-                           : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                       }`}
-                     >
-                       {cat.capitulo}
-                     </button>
-                   ))}
-                </div>
-             </div>
-             {filteredSupervisorData.length === 0 ? (
-               <p className="text-center text-gray-400 font-bold py-10">Ez dago galderarik kargatuta.</p>
-             ) : (
-               filteredSupervisorData.map(category => (
-                 <div key={category.capitulo} className="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100 mb-4">
-                   <div className="korrika-bg-gradient p-3 text-white font-black text-xs uppercase">{category.capitulo}</div>
-                   <div className="p-4 space-y-4">
-                     {category.preguntas.map(q => (
-                       <div key={q.id} className="border-b border-gray-50 pb-2">
-                         <p className="font-bold text-xs text-gray-800">{q.pregunta}</p>
-                         <p className="text-[10px] text-green-600 font-black">✓ {q.opciones[q.respuesta_correcta]}</p>
-                       </div>
-                     ))}
-                   </div>
-                 </div>
-               ))
-             )}
-          </div>
+          renderWithProfiler(
+            'SupervisorScreen',
+            <SupervisorScreen
+              supervisorCategory={supervisorCategory}
+              quizData={quizData}
+              filteredSupervisorData={filteredSupervisorData}
+              onSelectCategory={setSupervisorCategory}
+              onBack={handleGoHome}
+            />
+          )
         )}
 
       </main>
 
-      <footer className="w-full py-4 text-center opacity-30 text-[8px] font-black uppercase tracking-[0.3em] bg-gray-50">
-        🏃‍♀️ AEK - KORRIKA &copy; 2024 🏁
+      <footer className="w-full py-3 sm:py-4 text-center opacity-40 text-[10px] sm:text-[11px] font-black uppercase tracking-[0.2em] bg-gray-50 px-2">
+        AEK - KORRIKA
       </footer>
+      {profilingEnabled && (
+        <aside className="fixed right-2 bottom-2 z-50 w-[min(22rem,92vw)] rounded-2xl border border-gray-200 bg-white/95 shadow-xl backdrop-blur p-3">
+          <p className="text-[10px] font-black uppercase tracking-widest text-pink-600">Profilagailua aktibo</p>
+          <p className="text-[10px] font-bold text-gray-500 mt-1">3 errenderizazio garestienak (denbora metatua)</p>
+          <div className="mt-2 space-y-1.5">
+            {profileRows.length === 0 && (
+              <p className="text-[10px] text-gray-400 font-bold">Daturik ez oraindik. Nabigatu aplikazioan.</p>
+            )}
+            {profileRows.map((row) => (
+              <article key={row.id} className="rounded-xl border border-gray-100 bg-gray-50 px-2.5 py-2">
+                <p className="text-[10px] font-black text-gray-700 truncate">{row.id}</p>
+                <p className="text-[10px] text-gray-500 font-bold">
+                  eguneraketa: {row.commits} | guztira: {row.totalMs}ms | batez bestekoa: {row.avgMs}ms | gehienez: {row.maxMs}ms
+                </p>
+              </article>
+            ))}
+          </div>
+        </aside>
+      )}
     </div>
   );
 };

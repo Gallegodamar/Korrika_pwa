@@ -1,20 +1,32 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# KORRIKA PWA
 
-# Run and deploy your AI Studio app
+KORRIKA erronkarako galdetegi web aplikazioa.
 
-This contains everything you need to run your app locally.
+## Baldintzak
 
-View your app in AI Studio: https://ai.studio/apps/drive/1xS9B3eJqJaYt3ar2rpE-NNdTwDmp3-iY
+- Node.js 20+
 
-## Run Locally
+## Konfigurazioa
 
-**Prerequisites:**  Node.js
+Sortu `.env.local` fitxategia:
 
+```bash
+VITE_SUPABASE_URL=tu_url_de_supabase
+VITE_SUPABASE_ANON_KEY=tu_anon_key
+```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+Aldagaiak zehazten ez badituzu, proiektuak lehenetsitako balioak erabiliko ditu.
+
+## Exekutatu
+
+```bash
+npm install
+npm run dev
+```
+
+## Ekoizpeneko build-a
+
+```bash
+npm run build
+npm run preview
+```
