@@ -367,7 +367,7 @@ const App: React.FC = () => {
     const request = (async () => {
       try {
         setLoadingRanking(true);
-        const rows = await getLeaderboards();
+        const rows = await getLeaderboards(DAYS_COUNT);
         setLeaderboardRows(rows);
         leaderboardsFetchedAtRef.current = Date.now();
       } catch (err) {
@@ -1078,11 +1078,15 @@ const App: React.FC = () => {
   const challengeStartTs = useMemo(() => new Date(`${challengeStartDate}T00:00:00`).getTime(), [challengeStartDate]);
   const effectiveNowTs = simulationToday ? simulationToday.getTime() : nowTs;
   const timeUntilStart = Math.max(0, challengeStartTs - effectiveNowTs);
+  const activeEdukiaDay = useMemo(() => {
+    if (effectiveNowTs < challengeStartTs) return 0;
+    if (nextAvailableDay >= 0) return Math.min(nextAvailableDay + 1, DAYS_COUNT);
+    return Math.min(currentChallengeDayIndex + 1, DAYS_COUNT);
+  }, [challengeStartTs, currentChallengeDayIndex, effectiveNowTs, nextAvailableDay]);
   const activeEdukia = useMemo(() => {
     if (edukiak.length === 0) return null;
-    const targetDay = effectiveNowTs < challengeStartTs ? 0 : Math.min(currentChallengeDayIndex + 1, DAYS_COUNT);
-    return edukiak.find((item) => item.day === targetDay) ?? null;
-  }, [edukiak, challengeStartTs, currentChallengeDayIndex, effectiveNowTs]);
+    return edukiak.find((item) => item.day === activeEdukiaDay) ?? null;
+  }, [activeEdukiaDay, edukiak]);
   const completedDayIndexes = useMemo(
     () => effectiveDailyProgress.map((day, idx) => (day?.completed ? idx : -1)).filter((idx) => idx >= 0),
     [effectiveDailyProgress]

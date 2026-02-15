@@ -19,6 +19,21 @@ export type KorrikaEdukia = {
   content: string;
 };
 
+const parseDayIndex = (raw: unknown) => {
+  if (raw === null || raw === undefined) return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return null;
+  const intValue = Math.trunc(parsed);
+  return intValue;
+};
+
+const shouldTreatAsOneBased = (dayValues: number[], daysCount: number) => {
+  if (dayValues.length === 0) return false;
+  const hasZeroBasedMarker = dayValues.some((value) => value === 0);
+  if (hasZeroBasedMarker) return false;
+  return dayValues.every((value) => value >= 1 && value <= daysCount);
+};
+
 type PlayersSource = {
   table: string;
   columns: string[];
@@ -74,7 +89,7 @@ export const getRegisteredPlayers = async () => {
   return [];
 };
 
-export const getLeaderboards = async () => {
+export const getLeaderboards = async (daysCount = 11) => {
   const { data, error } = await supabase
     .from('game_results')
     .select('player_name, correct_answers, played_at, day_index')
@@ -82,7 +97,30 @@ export const getLeaderboards = async () => {
     .limit(5000);
 
   if (error) throw error;
-  return (data ?? []) as GameResultRow[];
+
+  const rawRows = (data ?? []) as Array<Record<string, unknown>>;
+  const rawDayValues = rawRows
+    .map((row) => parseDayIndex(row.day_index))
+    .filter((value): value is number => value !== null);
+  const oneBased = shouldTreatAsOneBased(rawDayValues, daysCount);
+
+  return rawRows.map((row) => {
+    const parsedDay = parseDayIndex(row.day_index);
+    const normalizedDay = parsedDay === null ? null : oneBased ? parsedDay - 1 : parsedDay;
+
+    return {
+      player_name: row.player_name ? String(row.player_name) : null,
+      correct_answers:
+        row.correct_answers === null || row.correct_answers === undefined
+          ? null
+          : Number(row.correct_answers),
+      played_at: row.played_at ? String(row.played_at) : null,
+      day_index:
+        normalizedDay !== null && normalizedDay >= 0 && normalizedDay < daysCount
+          ? normalizedDay
+          : null
+    } satisfies GameResultRow;
+  });
 };
 
 export const getUserDailyPlays = async (userId: string, daysCount: number) => {
@@ -97,12 +135,18 @@ export const getUserDailyPlays = async (userId: string, daysCount: number) => {
 
   if (error) throw error;
 
-  const rows = (data ?? []) as Array<{ day_index: number | null; played_at: string | null }>;
+  const rows = (data ?? []) as Array<{ day_index: unknown; played_at: string | null }>;
+  const rawDayValues = rows
+    .map((row) => parseDayIndex(row.day_index))
+    .filter((value): value is number => value !== null);
+  const oneBased = shouldTreatAsOneBased(rawDayValues, daysCount);
   const uniqueByDay = new Map<number, UserDailyPlayRow>();
 
   rows.forEach((row) => {
-    if (!Number.isInteger(row.day_index) || !row.played_at) return;
-    const dayIdx = row.day_index as number;
+    if (!row.played_at) return;
+    const parsedDay = parseDayIndex(row.day_index);
+    if (parsedDay === null) return;
+    const dayIdx = oneBased ? parsedDay - 1 : parsedDay;
     if (dayIdx < 0 || dayIdx >= daysCount) return;
     if (!uniqueByDay.has(dayIdx)) {
       uniqueByDay.set(dayIdx, { day_index: dayIdx, played_at: row.played_at });
