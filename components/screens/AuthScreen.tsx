@@ -44,7 +44,7 @@ const AuthScreen: React.FC<AuthScreenProps> = React.memo(
               value={username}
               onChange={(e) => onUsernameChange(e.target.value)}
               placeholder="k_0001"
-              className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 sm:px-5 py-3.5 text-sm font-bold text-gray-700 focus:border-pink-300 outline-none transition-all"
+              className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 sm:px-5 py-3.5 text-base sm:text-sm font-bold text-gray-700 focus:border-pink-300 outline-none transition-all"
             />
           </div>
           <div className="relative">
@@ -55,7 +55,7 @@ const AuthScreen: React.FC<AuthScreenProps> = React.memo(
               value={password}
               onChange={(e) => onPasswordChange(e.target.value)}
               placeholder="........"
-              className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 sm:px-5 py-3.5 text-sm font-bold text-gray-700 focus:border-pink-300 outline-none transition-all pr-12"
+              className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 sm:px-5 py-3.5 text-base sm:text-sm font-bold text-gray-700 focus:border-pink-300 outline-none transition-all pr-12"
             />
             <button
               type="button"

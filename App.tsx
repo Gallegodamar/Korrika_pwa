@@ -17,6 +17,7 @@ import { buildRanking } from './utils/ranking';
 import {
   GameResultRow,
   KorrikaEdukia,
+  StoredAnswerRow,
   UserDailyPlayRow,
   getEdukiak,
   getGlobalStartDate,
@@ -33,6 +34,8 @@ const QUIZ_CACHE_KEY = 'korrika_quiz_data_v1';
 const EDUKIAK_CACHE_KEY = 'korrika_edukiak_v1';
 const PLAYERS_CACHE_KEY = 'korrika_registered_players_v1';
 const START_DATE_CACHE_KEY = 'korrika_start_date_v1';
+const LEADERBOARDS_CACHE_KEY = 'korrika_leaderboards_v2';
+const USER_DAILY_PLAYS_CACHE_PREFIX = 'korrika_user_daily_plays_v2';
 const GLOBAL_CONFIG_TABLE = 'korrika_app_config';
 const START_DATE_CONFIG_KEY = 'challenge_start_date';
 const DAYS_COUNT = 11;
@@ -45,6 +48,8 @@ const QUIZ_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
 const EDUKIAK_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
 const PLAYERS_CACHE_TTL_MS = 1000 * 60 * 10;
 const START_DATE_CACHE_TTL_MS = 1000 * 60 * 5;
+const LEADERBOARDS_CACHE_TTL_MS = 1000 * 60 * 2;
+const USER_DAILY_PLAYS_CACHE_TTL_MS = 1000 * 60 * 2;
 const PROFILING_DEMO_QUIZ_DATA: QuizData[] = [
   {
     capitulo: 'Euskara',
@@ -233,6 +238,43 @@ const formatCountdown = (ms: number) => {
   return `${hours}:${minutes}:${seconds}`;
 };
 
+const normalizeOptionKey = (value: string | null) => {
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase();
+  return normalized || null;
+};
+
+const mapStoredAnswersToUserAnswers = (storedAnswers: StoredAnswerRow[]): UserAnswer[] =>
+  storedAnswers.map((answer, idx) => {
+    const selectedKey = normalizeOptionKey(answer.selected_option_key);
+    const correctKey = normalizeOptionKey(answer.correct_option_key) ?? selectedKey ?? 'a';
+    const selectedText = answer.selected_option_text?.trim() || 'Erantzuna';
+    const correctText = answer.correct_option_text?.trim() || selectedText || 'Erantzun zuzena';
+    const options: Record<string, string> = { [correctKey]: correctText };
+
+    if (selectedKey) {
+      options[selectedKey] = selectedText;
+    }
+
+    const inferredCorrect = selectedKey !== null && selectedKey === correctKey;
+    const questionId =
+      typeof answer.question_id === 'number' && Number.isFinite(answer.question_id)
+        ? answer.question_id
+        : 900000 + idx;
+
+    return {
+      question: {
+        id: questionId,
+        pregunta: answer.question_text?.trim() || `Galdera ${idx + 1}`,
+        opciones: options,
+        respuesta_correcta: correctKey,
+        categoryName: answer.category?.trim() || undefined
+      },
+      selectedOption: selectedKey,
+      isCorrect: typeof answer.is_correct === 'boolean' ? answer.is_correct : inferredCorrect
+    };
+  });
+
 type LeaderboardView = 'DAILY' | 'GENERAL';
 
 type ProfileStats = {
@@ -276,6 +318,10 @@ const App: React.FC = () => {
   const [loadingData, setLoadingData] = useState(true);
   const [quizData, setQuizData] = useState<QuizData[]>([]);
   const leaderboardsRequestRef = useRef<Promise<void> | null>(null);
+  const quizDataRequestRef = useRef<Promise<void> | null>(null);
+  const edukiaRequestRef = useRef<Promise<void> | null>(null);
+  const registeredPlayersRequestRef = useRef<Promise<void> | null>(null);
+  const globalStartDateRequestRef = useRef<Promise<void> | null>(null);
   const userDailyPlaysRequestRef = useRef<Map<string, Promise<void>>>(new Map());
   const leaderboardsFetchedAtRef = useRef(0);
   const userDailyPlaysFetchedAtRef = useRef<Map<string, number>>(new Map());
@@ -321,11 +367,11 @@ const App: React.FC = () => {
     return new URLSearchParams(window.location.search).get('profiling') === '1';
   }, []);
   const profilingDemoEnabled = useMemo(() => {
-    if (typeof window === 'undefined') return false;
+    if (typeof window === 'undefined' || !import.meta.env.DEV) return false;
     return new URLSearchParams(window.location.search).get('profilingDemo') === '1';
   }, []);
   const profilingAutoplayEnabled = useMemo(() => {
-    if (typeof window === 'undefined') return false;
+    if (typeof window === 'undefined' || !import.meta.env.DEV) return false;
     return new URLSearchParams(window.location.search).get('autoplay') === '1';
   }, []);
   const profilingAutomationEnabled = profilingEnabled && profilingDemoEnabled && profilingAutoplayEnabled;
@@ -346,22 +392,44 @@ const App: React.FC = () => {
       }
     }
 
-    try {
-      const names = await getRegisteredPlayers();
-      setRegisteredPlayers(names);
-      if (names.length > 0) {
-        writeLocalCache(PLAYERS_CACHE_KEY, names);
-      } else {
+    if (registeredPlayersRequestRef.current) return registeredPlayersRequestRef.current;
+
+    const request = (async () => {
+      try {
+        const names = await getRegisteredPlayers();
+        setRegisteredPlayers(names);
+        if (names.length > 0) {
+          writeLocalCache(PLAYERS_CACHE_KEY, names);
+        } else {
+          removeLocalCache(PLAYERS_CACHE_KEY);
+        }
+      } catch {
+        setRegisteredPlayers([]);
         removeLocalCache(PLAYERS_CACHE_KEY);
       }
-    } catch {
-      setRegisteredPlayers([]);
-      removeLocalCache(PLAYERS_CACHE_KEY);
+    })();
+
+    registeredPlayersRequestRef.current = request;
+    try {
+      await request;
+    } finally {
+      registeredPlayersRequestRef.current = null;
     }
   };
 
   const fetchLeaderboards = useCallback(async (force = false) => {
-    if (!force && Date.now() - leaderboardsFetchedAtRef.current < 30000) return;
+    if (!force) {
+      const cachedRows = readLocalCache<GameResultRow[]>(
+        LEADERBOARDS_CACHE_KEY,
+        LEADERBOARDS_CACHE_TTL_MS
+      );
+      if (cachedRows) {
+        setLeaderboardRows(cachedRows);
+        leaderboardsFetchedAtRef.current = Date.now();
+        return;
+      }
+      if (Date.now() - leaderboardsFetchedAtRef.current < 30000) return;
+    }
     if (leaderboardsRequestRef.current) return leaderboardsRequestRef.current;
 
     const request = (async () => {
@@ -369,10 +437,19 @@ const App: React.FC = () => {
         setLoadingRanking(true);
         const rows = await getLeaderboards(DAYS_COUNT);
         setLeaderboardRows(rows);
+        writeLocalCache(LEADERBOARDS_CACHE_KEY, rows);
         leaderboardsFetchedAtRef.current = Date.now();
       } catch (err) {
         console.error('Error fetching leaderboards:', err);
-        setLeaderboardRows([]);
+        const cachedRows = readLocalCache<GameResultRow[]>(
+          LEADERBOARDS_CACHE_KEY,
+          LEADERBOARDS_CACHE_TTL_MS
+        );
+        if (cachedRows) {
+          setLeaderboardRows(cachedRows);
+        } else {
+          setLeaderboardRows([]);
+        }
       } finally {
         setLoadingRanking(false);
       }
@@ -393,6 +470,19 @@ const App: React.FC = () => {
       return;
     }
 
+    const cacheKey = `${USER_DAILY_PLAYS_CACHE_PREFIX}_${targetUserId}`;
+    if (!force) {
+      const cachedRows = readLocalCache<UserDailyPlayRow[]>(
+        cacheKey,
+        USER_DAILY_PLAYS_CACHE_TTL_MS
+      );
+      if (cachedRows) {
+        setUserDailyPlays(cachedRows);
+        userDailyPlaysFetchedAtRef.current.set(targetUserId, Date.now());
+        return;
+      }
+    }
+
     const lastFetchTs = userDailyPlaysFetchedAtRef.current.get(targetUserId) ?? 0;
     if (!force && Date.now() - lastFetchTs < 30000) return;
 
@@ -403,10 +493,19 @@ const App: React.FC = () => {
       try {
         const rows = await getUserDailyPlays(targetUserId, DAYS_COUNT);
         setUserDailyPlays(rows);
+        writeLocalCache(cacheKey, rows);
         userDailyPlaysFetchedAtRef.current.set(targetUserId, Date.now());
       } catch (err) {
         console.error('Error fetching user daily plays:', err);
-        setUserDailyPlays([]);
+        const cachedRows = readLocalCache<UserDailyPlayRow[]>(
+          cacheKey,
+          USER_DAILY_PLAYS_CACHE_TTL_MS
+        );
+        if (cachedRows) {
+          setUserDailyPlays(cachedRows);
+        } else {
+          setUserDailyPlays([]);
+        }
       }
     })();
 
@@ -428,17 +527,28 @@ const App: React.FC = () => {
       }
     }
 
+    if (edukiaRequestRef.current) return edukiaRequestRef.current;
+
+    const request = (async () => {
+      try {
+        setLoadingEdukiak(true);
+        const mapped = await getEdukiak(DAYS_COUNT);
+        setEdukiak(mapped);
+        writeLocalCache(EDUKIAK_CACHE_KEY, mapped);
+      } catch (err) {
+        console.error('Error fetching korrika_edukiak:', err);
+        setEdukiak([]);
+        removeLocalCache(EDUKIAK_CACHE_KEY);
+      } finally {
+        setLoadingEdukiak(false);
+      }
+    })();
+
+    edukiaRequestRef.current = request;
     try {
-      setLoadingEdukiak(true);
-      const mapped = await getEdukiak(DAYS_COUNT);
-      setEdukiak(mapped);
-      writeLocalCache(EDUKIAK_CACHE_KEY, mapped);
-    } catch (err) {
-      console.error('Error fetching korrika_edukiak:', err);
-      setEdukiak([]);
-      removeLocalCache(EDUKIAK_CACHE_KEY);
+      await request;
     } finally {
-      setLoadingEdukiak(false);
+      edukiaRequestRef.current = null;
     }
   };
 
@@ -452,17 +562,28 @@ const App: React.FC = () => {
       }
     }
 
+    if (quizDataRequestRef.current) return quizDataRequestRef.current;
+
+    const request = (async () => {
+      try {
+        setLoadingData(true);
+        const mappedData = await getQuizData();
+        setQuizData(mappedData);
+        writeLocalCache(QUIZ_CACHE_KEY, mappedData);
+      } catch (err) {
+        console.error("Error fetching quiz data:", err);
+        setQuizData([]);
+        removeLocalCache(QUIZ_CACHE_KEY);
+      } finally {
+        setLoadingData(false);
+      }
+    })();
+
+    quizDataRequestRef.current = request;
     try {
-      setLoadingData(true);
-      const mappedData = await getQuizData();
-      setQuizData(mappedData);
-      writeLocalCache(QUIZ_CACHE_KEY, mappedData);
-    } catch (err) {
-      console.error("Error fetching quiz data:", err);
-      setQuizData([]);
-      removeLocalCache(QUIZ_CACHE_KEY);
+      await request;
     } finally {
-      setLoadingData(false);
+      quizDataRequestRef.current = null;
     }
   };
 
@@ -476,24 +597,50 @@ const App: React.FC = () => {
       }
     }
 
-    try {
-      const rawValue = await getGlobalStartDate(GLOBAL_CONFIG_TABLE, START_DATE_CONFIG_KEY);
-      if (rawValue) {
-        setChallengeStartDate(rawValue);
-        setAdminStartDateInput(rawValue);
-        writeLocalCache(START_DATE_CACHE_KEY, rawValue);
-      } else {
+    if (globalStartDateRequestRef.current) return globalStartDateRequestRef.current;
+
+    const request = (async () => {
+      try {
+        const rawValue = await getGlobalStartDate(GLOBAL_CONFIG_TABLE, START_DATE_CONFIG_KEY);
+        if (rawValue) {
+          setChallengeStartDate(rawValue);
+          setAdminStartDateInput(rawValue);
+          writeLocalCache(START_DATE_CACHE_KEY, rawValue);
+        } else {
+          setChallengeStartDate(DEFAULT_CHALLENGE_START_DATE);
+          setAdminStartDateInput(DEFAULT_CHALLENGE_START_DATE);
+          removeLocalCache(START_DATE_CACHE_KEY);
+        }
+      } catch (err) {
+        console.error('Error fetching global start date:', err);
         setChallengeStartDate(DEFAULT_CHALLENGE_START_DATE);
         setAdminStartDateInput(DEFAULT_CHALLENGE_START_DATE);
         removeLocalCache(START_DATE_CACHE_KEY);
       }
-    } catch (err) {
-      console.error('Error fetching global start date:', err);
-      setChallengeStartDate(DEFAULT_CHALLENGE_START_DATE);
-      setAdminStartDateInput(DEFAULT_CHALLENGE_START_DATE);
-      removeLocalCache(START_DATE_CACHE_KEY);
+    })();
+
+    globalStartDateRequestRef.current = request;
+    try {
+      await request;
+    } finally {
+      globalStartDateRequestRef.current = null;
     }
   };
+
+  const refreshPostAuthData = useCallback(async (targetUserId: string) => {
+    await Promise.all([
+      fetchGlobalStartDate(true),
+      fetchRegisteredPlayers(true),
+      (async () => {
+        await fetchLeaderboards();
+        await fetchLeaderboards(true);
+      })(),
+      (async () => {
+        await fetchUserDailyPlays(targetUserId);
+        await fetchUserDailyPlays(targetUserId, true);
+      })()
+    ]);
+  }, [fetchLeaderboards, fetchUserDailyPlays]);
 
   useEffect(() => {
     if (gameState !== GameState.HOME) return;
@@ -544,7 +691,7 @@ const App: React.FC = () => {
         if (session?.user) {
           setUser(session.user);
           setGameState(GameState.HOME);
-          void fetchUserDailyPlays(session.user.id);
+          void refreshPostAuthData(session.user.id);
         }
       } catch (err) {
         console.error("Session check error:", err);
@@ -569,12 +716,13 @@ const App: React.FC = () => {
       if (session?.user) {
         setGameState(GameState.HOME);
         setDailyPlayLockMessage(null);
-        void fetchGlobalStartDate();
-        void fetchRegisteredPlayers();
-        void fetchLeaderboards();
-        void fetchUserDailyPlays(session.user.id);
+        void refreshPostAuthData(session.user.id);
       } else {
         setGameState(GameState.AUTH);
+        quizDataRequestRef.current = null;
+        edukiaRequestRef.current = null;
+        registeredPlayersRequestRef.current = null;
+        globalStartDateRequestRef.current = null;
         userDailyPlaysRequestRef.current.clear();
         userDailyPlaysFetchedAtRef.current.clear();
         leaderboardsFetchedAtRef.current = 0;
@@ -626,6 +774,7 @@ const App: React.FC = () => {
         setUser(data.user);
         setDailyPlayLockMessage(null);
         setGameState(GameState.HOME);
+        await refreshPostAuthData(data.user.id);
       }
     } catch (err: any) {
       console.error("Supabase Login Error:", err);
@@ -638,6 +787,10 @@ const App: React.FC = () => {
   const handleLogout = async () => {
     await supabase.auth.signOut();
     leaderboardsRequestRef.current = null;
+    quizDataRequestRef.current = null;
+    edukiaRequestRef.current = null;
+    registeredPlayersRequestRef.current = null;
+    globalStartDateRequestRef.current = null;
     leaderboardsFetchedAtRef.current = 0;
     userDailyPlaysRequestRef.current.clear();
     userDailyPlaysFetchedAtRef.current.clear();
@@ -682,13 +835,16 @@ const App: React.FC = () => {
     const merged = [...progress];
     userDailyPlays.forEach((play) => {
       const existing = merged[play.day_index];
-      if (existing?.completed) return;
+      const serverAnswers = mapStoredAnswersToUserAnswers(play.answers ?? []);
+      const existingAnswers = existing?.answers ?? [];
+      const mergedAnswers = existingAnswers.length > 0 ? existingAnswers : serverAnswers;
+      const mergedScore = existing?.score ?? play.correct_answers ?? 0;
       merged[play.day_index] = {
         dayIndex: play.day_index,
-        score: existing?.score ?? 0,
+        score: mergedScore,
         completed: true,
-        date: play.played_at,
-        answers: existing?.answers ?? [],
+        date: existing?.date ?? play.played_at,
+        answers: mergedAnswers,
         players: existing?.players
       };
     });

@@ -8,9 +8,23 @@ export type GameResultRow = {
   day_index: number | null;
 };
 
+export type StoredAnswerRow = {
+  question_id: number | null;
+  question_text: string | null;
+  category: string | null;
+  selected_option_key: string | null;
+  selected_option_text: string | null;
+  correct_option_key: string | null;
+  correct_option_text: string | null;
+  is_correct: boolean | null;
+};
+
 export type UserDailyPlayRow = {
   day_index: number;
   played_at: string;
+  correct_answers: number;
+  total_questions: number;
+  answers: StoredAnswerRow[];
 };
 
 export type KorrikaEdukia = {
@@ -25,6 +39,43 @@ const parseDayIndex = (raw: unknown) => {
   if (!Number.isFinite(parsed)) return null;
   const intValue = Math.trunc(parsed);
   return intValue;
+};
+
+const parseScoreValue = (raw: unknown) => {
+  if (raw === null || raw === undefined) return 0;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.trunc(parsed));
+};
+
+const toNullableString = (raw: unknown) => {
+  if (raw === null || raw === undefined) return null;
+  const value = String(raw).trim();
+  return value || null;
+};
+
+const parseStoredAnswers = (raw: unknown): StoredAnswerRow[] => {
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const answer = item as Record<string, unknown>;
+      const parsedQuestionId = parseDayIndex(answer.question_id);
+      const isCorrectRaw = answer.is_correct;
+
+      return {
+        question_id: parsedQuestionId,
+        question_text: toNullableString(answer.question_text),
+        category: toNullableString(answer.category),
+        selected_option_key: toNullableString(answer.selected_option_key),
+        selected_option_text: toNullableString(answer.selected_option_text),
+        correct_option_key: toNullableString(answer.correct_option_key),
+        correct_option_text: toNullableString(answer.correct_option_text),
+        is_correct: typeof isCorrectRaw === 'boolean' ? isCorrectRaw : null
+      } satisfies StoredAnswerRow;
+    })
+    .filter((item): item is StoredAnswerRow => Boolean(item));
 };
 
 const shouldTreatAsOneBased = (dayValues: number[], daysCount: number) => {
@@ -126,7 +177,7 @@ export const getLeaderboards = async (daysCount = 11) => {
 export const getUserDailyPlays = async (userId: string, daysCount: number) => {
   const { data, error } = await supabase
     .from('game_results')
-    .select('day_index, played_at')
+    .select('day_index, played_at, correct_answers, total_questions, answers')
     .eq('user_id', userId)
     .eq('play_mode', 'DAILY')
     .not('day_index', 'is', null)
@@ -135,7 +186,13 @@ export const getUserDailyPlays = async (userId: string, daysCount: number) => {
 
   if (error) throw error;
 
-  const rows = (data ?? []) as Array<{ day_index: unknown; played_at: string | null }>;
+  const rows = (data ?? []) as Array<{
+    day_index: unknown;
+    played_at: string | null;
+    correct_answers: unknown;
+    total_questions: unknown;
+    answers: unknown;
+  }>;
   const rawDayValues = rows
     .map((row) => parseDayIndex(row.day_index))
     .filter((value): value is number => value !== null);
@@ -149,7 +206,13 @@ export const getUserDailyPlays = async (userId: string, daysCount: number) => {
     const dayIdx = oneBased ? parsedDay - 1 : parsedDay;
     if (dayIdx < 0 || dayIdx >= daysCount) return;
     if (!uniqueByDay.has(dayIdx)) {
-      uniqueByDay.set(dayIdx, { day_index: dayIdx, played_at: row.played_at });
+      uniqueByDay.set(dayIdx, {
+        day_index: dayIdx,
+        played_at: row.played_at,
+        correct_answers: parseScoreValue(row.correct_answers),
+        total_questions: parseScoreValue(row.total_questions),
+        answers: parseStoredAnswers(row.answers)
+      });
     }
   });
 
