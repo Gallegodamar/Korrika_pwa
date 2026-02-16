@@ -893,20 +893,15 @@ const App: React.FC = () => {
 
     if (todayIndex < 0) return -4;
     if (todayIndex >= DAYS_COUNT) return -5;
-
-    for (let i = 0; i < DAYS_COUNT; i++) {
-      const day = sourceProgress[i];
-      if (day?.completed) continue;
-      if (i > todayIndex) return -1;
-      if (i === 0) return i;
-      const prevDay = sourceProgress[i - 1];
-      if (!prevDay?.completed) return -1;
-      const lastDate = getLocalDateKey(prevDay.date);
+    const todayProgress = sourceProgress[todayIndex];
+    if (todayProgress?.completed) {
+      const playedDate = getLocalDateKey(todayProgress.date);
       const todayDate = getLocalDateKey(today);
-      if (lastDate === todayDate) return -2;
-      return i;
+      if (playedDate === todayDate) return -2;
+      return -1;
     }
-    return -3;
+
+    return todayIndex;
   }, [effectiveDailyProgress, challengeStartDate, simulationToday]);
 
   const generateQuestions = useCallback((mode: PlayMode, idx: number) => {
