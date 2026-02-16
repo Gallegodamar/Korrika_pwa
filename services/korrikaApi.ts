@@ -54,6 +54,102 @@ const toNullableString = (raw: unknown) => {
   return value || null;
 };
 
+const toOptionKey = (raw: unknown) => {
+  if (raw === null || raw === undefined) return null;
+  const key = String(raw).trim().toLowerCase();
+  return key || null;
+};
+
+const toOptionText = (raw: unknown) => {
+  if (raw === null || raw === undefined) return null;
+  const text = String(raw).trim();
+  return text || null;
+};
+
+const normalizeOptionText = (value: string) =>
+  value
+    .normalize('NFKC')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+type SanitizedQuestionOptions = {
+  options: Record<string, string>;
+  correctKey: string;
+};
+
+const sanitizeQuestionOptions = (
+  rawOptions: unknown,
+  rawCorrectKey: unknown
+): SanitizedQuestionOptions => {
+  const targetCorrectKey = toOptionKey(rawCorrectKey);
+  const optionsSource = Array.isArray(rawOptions) ? rawOptions : [];
+
+  const uniqueByKey = new Map<string, { key: string; text: string }>();
+  optionsSource.forEach((item) => {
+    if (!item || typeof item !== 'object') return;
+    const option = item as Record<string, unknown>;
+    const key = toOptionKey(option.opt_key);
+    const text = toOptionText(option.opt_text);
+    if (!key || !text) return;
+    if (!uniqueByKey.has(key)) {
+      uniqueByKey.set(key, { key, text });
+    }
+  });
+
+  const sortedByKey = [...uniqueByKey.values()].sort((a, b) => a.key.localeCompare(b.key));
+  const uniqueByText = new Map<string, { key: string; text: string }>();
+
+  sortedByKey.forEach((option) => {
+    const textKey = normalizeOptionText(option.text);
+    const existing = uniqueByText.get(textKey);
+    if (!existing) {
+      uniqueByText.set(textKey, option);
+      return;
+    }
+
+    const existingIsCorrect = existing.key === targetCorrectKey;
+    const optionIsCorrect = option.key === targetCorrectKey;
+    if (optionIsCorrect && !existingIsCorrect) {
+      uniqueByText.set(textKey, option);
+    }
+  });
+
+  const deduped = [...uniqueByText.values()].sort((a, b) => a.key.localeCompare(b.key));
+  let finalCorrectKey =
+    targetCorrectKey && deduped.some((option) => option.key === targetCorrectKey)
+      ? targetCorrectKey
+      : null;
+
+  if (!finalCorrectKey && targetCorrectKey) {
+    const originalCorrect = sortedByKey.find((option) => option.key === targetCorrectKey);
+    if (originalCorrect) {
+      const textKey = normalizeOptionText(originalCorrect.text);
+      const duplicateIndex = deduped.findIndex(
+        (option) => normalizeOptionText(option.text) === textKey
+      );
+      if (duplicateIndex >= 0) {
+        deduped[duplicateIndex] = originalCorrect;
+      } else {
+        deduped.unshift(originalCorrect);
+      }
+      finalCorrectKey = originalCorrect.key;
+    }
+  }
+
+  if (!finalCorrectKey && deduped.length > 0) {
+    finalCorrectKey = deduped[0].key;
+  }
+
+  return {
+    options: deduped.reduce((acc, option) => {
+      acc[option.key] = option.text;
+      return acc;
+    }, {} as Record<string, string>),
+    correctKey: finalCorrectKey ?? ''
+  };
+};
+
 const parseStoredAnswers = (raw: unknown): StoredAnswerRow[] => {
   if (!Array.isArray(raw)) return [];
 
@@ -252,19 +348,17 @@ export const getQuizData = async () => {
   return ((data ?? []) as Array<Record<string, any>>).map((chapter) => ({
     capitulo: String(chapter.name ?? ''),
     preguntas: (chapter.questions ?? []).map((q: any) => {
-      const sortedOptions = (q.options ?? []).sort((a: any, b: any) =>
-        String(a.opt_key).localeCompare(String(b.opt_key))
+      const { options: sanitizedOptions, correctKey } = sanitizeQuestionOptions(
+        q.options,
+        q.correct_key
       );
 
       return {
         id: q.id,
         pregunta: q.question_text,
-        respuesta_correcta: q.correct_key,
+        respuesta_correcta: correctKey,
         categoryName: chapter.name,
-        opciones: sortedOptions.reduce((acc: Record<string, string>, opt: any) => {
-          acc[opt.opt_key] = opt.opt_text;
-          return acc;
-        }, {})
+        opciones: sanitizedOptions
       };
     })
   })) as QuizData[];

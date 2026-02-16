@@ -28,7 +28,8 @@ import {
   saveGlobalStartDate
 } from './services/korrikaApi';
 
-const STORAGE_KEY = 'korrika_quiz_progress_v6';
+const PROGRESS_STORAGE_PREFIX = 'korrika_quiz_progress_v7';
+const LEGACY_PROGRESS_STORAGE_KEY = 'korrika_quiz_progress_v6';
 const SIMULATION_STORAGE_KEY = 'korrika_simulation_mode';
 const QUIZ_CACHE_KEY = 'korrika_quiz_data_v1';
 const EDUKIAK_CACHE_KEY = 'korrika_edukiak_v1';
@@ -238,6 +239,8 @@ const formatCountdown = (ms: number) => {
   return `${hours}:${minutes}:${seconds}`;
 };
 
+const getUserProgressStorageKey = (userId: string) => `${PROGRESS_STORAGE_PREFIX}_${userId}`;
+
 const normalizeOptionKey = (value: string | null) => {
   if (!value) return null;
   const normalized = value.trim().toLowerCase();
@@ -359,6 +362,10 @@ const App: React.FC = () => {
   const [validatingDailyStart, setValidatingDailyStart] = useState(false);
   const [userDailyPlays, setUserDailyPlays] = useState<UserDailyPlayRow[]>([]);
   const [profileRows, setProfileRows] = useState<ProfileRow[]>([]);
+  const progressStorageKey = useMemo(
+    () => (user?.id ? getUserProgressStorageKey(user.id) : null),
+    [user?.id]
+  );
   const profileStatsRef = useRef<Map<string, ProfileStats>>(new Map());
   const autoplayStartedRef = useRef(false);
   const autoplayQuestionRef = useRef<number | null>(null);
@@ -681,7 +688,8 @@ const App: React.FC = () => {
       setAdminStartDateInput(todayKey);
       setSimulationEnabled(true);
       setProgress([]);
-      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(LEGACY_PROGRESS_STORAGE_KEY);
+      localStorage.removeItem(getUserProgressStorageKey('profiling-admin'));
       return;
     }
 
@@ -714,6 +722,7 @@ const App: React.FC = () => {
       if (event === 'INITIAL_SESSION') return;
       setUser(session?.user ?? null);
       if (session?.user) {
+        setProgress([]);
         setGameState(GameState.HOME);
         setDailyPlayLockMessage(null);
         void refreshPostAuthData(session.user.id);
@@ -730,24 +739,46 @@ const App: React.FC = () => {
         setValidatingDailyStart(false);
         setUserDailyPlays([]);
         setLeaderboardRows([]);
+        setProgress([]);
       }
     });
 
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          setProgress(parsed as DailyProgress[]);
-        }
-      } catch (err) {
-        console.error('Error loading local progress:', err);
-        localStorage.removeItem(STORAGE_KEY);
-      }
-    }
-
     return () => subscription.unsubscribe();
   }, [profilingDemoEnabled]);
+
+  useEffect(() => {
+    if (profilingDemoEnabled) return;
+    localStorage.removeItem(LEGACY_PROGRESS_STORAGE_KEY);
+  }, [profilingDemoEnabled]);
+
+  useEffect(() => {
+    if (profilingDemoEnabled) return;
+    if (!progressStorageKey) {
+      setProgress([]);
+      return;
+    }
+
+    const saved = localStorage.getItem(progressStorageKey);
+    if (!saved) {
+      setProgress([]);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        setProgress(parsed as DailyProgress[]);
+        return;
+      }
+
+      setProgress([]);
+      localStorage.removeItem(progressStorageKey);
+    } catch (err) {
+      console.error('Error loading local progress:', err);
+      setProgress([]);
+      localStorage.removeItem(progressStorageKey);
+    }
+  }, [profilingDemoEnabled, progressStorageKey]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -801,6 +832,7 @@ const App: React.FC = () => {
     setValidatingDailyStart(false);
     setUserDailyPlays([]);
     setLeaderboardRows([]);
+    setProgress([]);
     setReviewDayIndex(null);
     setSequentialSimulationActive(false);
     setSequentialSimulationDay(0);
@@ -1052,7 +1084,9 @@ const App: React.FC = () => {
       const updatedProgress = [...progress];
       updatedProgress[dayIndex] = newDailyProgress;
       setProgress(updatedProgress);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedProgress));
+      if (user?.id) {
+        localStorage.setItem(getUserProgressStorageKey(user.id), JSON.stringify(updatedProgress));
+      }
     }
 
     if (!isSimulationRun && !sequentialSimulationActive) {
