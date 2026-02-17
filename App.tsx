@@ -1241,15 +1241,11 @@ const App: React.FC = () => {
 
   const userDisplayName = (user?.email?.split('@')[0] || 'Gonbidatua').toUpperCase();
   const isAdmin = ADMIN_USERS.includes((user?.email?.split('@')[0] || '').toLowerCase());
-  const rankingBasePlayers = useMemo(() => {
-    const list = user?.id ? [...registeredPlayers, userDisplayName] : registeredPlayers;
-    return [...new Set(list.map((name) => name.trim()).filter(Boolean))];
-  }, [registeredPlayers, user?.id, userDisplayName]);
   const shouldComputeHomeRankings = gameState === GameState.HOME;
   const generalRanking = useMemo(() => {
     if (!shouldComputeHomeRankings) return [];
-    return buildRanking(leaderboardRows, rankingBasePlayers);
-  }, [shouldComputeHomeRankings, leaderboardRows, rankingBasePlayers]);
+    return buildRanking(leaderboardRows);
+  }, [shouldComputeHomeRankings, leaderboardRows]);
   const dailyRanking = useMemo(() => {
     if (!shouldComputeHomeRankings) return [];
     const dailyRows = leaderboardRows.filter(
@@ -1567,6 +1563,7 @@ const App: React.FC = () => {
               selectedDailyLeaderboardDay={selectedDailyLeaderboardDay}
               onSelectedDailyLeaderboardDayChange={setSelectedDailyLeaderboardDay}
               activeRanking={activeRanking}
+              currentPlayerName={userDisplayName}
             />
           )
         )}

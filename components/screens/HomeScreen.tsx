@@ -40,6 +40,7 @@ type HomeScreenProps = {
   selectedDailyLeaderboardDay: number;
   onSelectedDailyLeaderboardDayChange: (day: number) => void;
   activeRanking: RankingEntry[];
+  currentPlayerName: string;
 };
 
 type EdukiaCardProps = {
@@ -310,6 +311,7 @@ type RankingPanelProps = {
   onSelectedDailyLeaderboardDayChange: (day: number) => void;
   dayOptions: number[];
   activeRanking: RankingEntry[];
+  currentPlayerName: string;
 };
 
 const RankingPanel: React.FC<RankingPanelProps> = React.memo(
@@ -320,111 +322,152 @@ const RankingPanel: React.FC<RankingPanelProps> = React.memo(
     selectedDailyLeaderboardDay,
     onSelectedDailyLeaderboardDayChange,
     dayOptions,
-    activeRanking
-  }) => (
-    <section className="w-full px-2 sm:px-4">
-      <div className="rounded-[1.5rem] border border-gray-200 bg-white shadow-lg overflow-hidden">
-        <div className="korrika-bg-gradient p-4 text-white">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h3 className="text-base font-black uppercase">Sailkapena</h3>
+    activeRanking,
+    currentPlayerName
+  }) => {
+    const visibleRanking = activeRanking.slice(0, 5);
+    const normalizedCurrentPlayer = currentPlayerName.trim().toUpperCase();
+    const currentPlayerRankIndex = activeRanking.findIndex(
+      (entry) => entry.playerName === normalizedCurrentPlayer
+    );
+    const showCurrentPlayerRank = currentPlayerRankIndex >= 5;
+    const currentPlayerRankEntry = showCurrentPlayerRank
+      ? activeRanking[currentPlayerRankIndex]
+      : null;
+
+    return (
+      <section className="w-full px-2 sm:px-4">
+        <div className="rounded-[1.5rem] border border-gray-200 bg-white shadow-lg overflow-hidden">
+          <div className="korrika-bg-gradient p-4 text-white">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-black uppercase">Sailkapena</h3>
+              </div>
+              {loadingRanking && (
+                <span className="rounded-full bg-white/20 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider">
+                  Kargatzen
+                </span>
+              )}
             </div>
-            {loadingRanking && (
-              <span className="rounded-full bg-white/20 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider">
-                Kargatzen
-              </span>
+
+            <div className="mt-3 grid grid-cols-2 gap-2 rounded-2xl bg-white/15 p-1">
+              <button
+                onClick={() => onLeaderboardViewChange('DAILY')}
+                className={`rounded-xl py-2 text-[11px] font-black uppercase transition-all ${
+                  leaderboardView === 'DAILY'
+                    ? 'bg-white text-pink-600 shadow-sm'
+                    : 'text-white/80 hover:text-white'
+                }`}
+              >
+                Egunekoa
+              </button>
+              <button
+                onClick={() => onLeaderboardViewChange('GENERAL')}
+                className={`rounded-xl py-2 text-[11px] font-black uppercase transition-all ${
+                  leaderboardView === 'GENERAL'
+                    ? 'bg-white text-pink-600 shadow-sm'
+                    : 'text-white/80 hover:text-white'
+                }`}
+              >
+                Orokorra
+              </button>
+            </div>
+
+            {leaderboardView === 'DAILY' && (
+              <div className="mt-3">
+                <label className="block text-[10px] font-black uppercase tracking-wider text-white/80 mb-1">
+                  Eguna
+                </label>
+                <select
+                  value={selectedDailyLeaderboardDay}
+                  onChange={(e) => onSelectedDailyLeaderboardDayChange(Number(e.target.value))}
+                  className="w-full rounded-xl border border-white/30 bg-white/90 text-pink-700 px-3 py-2.5 text-sm font-black outline-none"
+                >
+                  {dayOptions.map((idx) => (
+                    <option key={`leaderboard-day-${idx}`} value={idx}>
+                      {idx + 1}. eguna
+                    </option>
+                  ))}
+                </select>
+              </div>
             )}
           </div>
 
-          <div className="mt-3 grid grid-cols-2 gap-2 rounded-2xl bg-white/15 p-1">
-            <button
-              onClick={() => onLeaderboardViewChange('DAILY')}
-              className={`rounded-xl py-2 text-[11px] font-black uppercase transition-all ${
-                leaderboardView === 'DAILY'
-                  ? 'bg-white text-pink-600 shadow-sm'
-                  : 'text-white/80 hover:text-white'
-              }`}
-            >
-              Egunekoa
-            </button>
-            <button
-              onClick={() => onLeaderboardViewChange('GENERAL')}
-              className={`rounded-xl py-2 text-[11px] font-black uppercase transition-all ${
-                leaderboardView === 'GENERAL'
-                  ? 'bg-white text-pink-600 shadow-sm'
-                  : 'text-white/80 hover:text-white'
-              }`}
-            >
-              Orokorra
-            </button>
-          </div>
-
-          {leaderboardView === 'DAILY' && (
-            <div className="mt-3">
-              <label className="block text-[10px] font-black uppercase tracking-wider text-white/80 mb-1">
-                Eguna
-              </label>
-              <select
-                value={selectedDailyLeaderboardDay}
-                onChange={(e) => onSelectedDailyLeaderboardDayChange(Number(e.target.value))}
-                className="w-full rounded-xl border border-white/30 bg-white/90 text-pink-700 px-3 py-2.5 text-sm font-black outline-none"
-              >
-                {dayOptions.map((idx) => (
-                  <option key={`leaderboard-day-${idx}`} value={idx}>
-                    {idx + 1}. eguna
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-        </div>
-
-        <div className="p-4">
-          {activeRanking.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center">
-              <p className="text-xs sm:text-sm font-bold text-gray-400">
-                {leaderboardView === 'DAILY'
-                  ? `Ez dago ${selectedDailyLeaderboardDay + 1}. eguneko emaitzarik oraindik.`
-                  : 'Oraindik ez dago rankingerako daturik.'}
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {activeRanking.slice(0, 5).map((entry, idx) => (
-                <article
-                  key={`${leaderboardView}-${entry.playerName}`}
-                  className="flex items-center justify-between rounded-xl border border-gray-100 px-3 py-2.5"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <span
-                      className={`w-9 h-9 rounded-lg flex items-center justify-center text-xs font-black ${
-                        idx === 0
-                          ? 'bg-yellow-100 text-yellow-700'
-                          : idx === 1
-                            ? 'bg-slate-200 text-slate-700'
-                            : idx === 2
-                              ? 'bg-amber-100 text-amber-700'
-                              : 'bg-gray-100 text-gray-500'
-                      }`}
-                    >
-                      {idx + 1}
-                    </span>
-                    <div className="min-w-0">
-                      <p className="text-sm font-black text-gray-800 truncate">{entry.playerName}</p>
-                      {leaderboardView === 'GENERAL' && (
-                        <p className="text-[10px] font-bold uppercase text-gray-400">{entry.games} saio</p>
-                      )}
+          <div className="p-4">
+            {visibleRanking.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center">
+                <p className="text-xs sm:text-sm font-bold text-gray-400">
+                  {leaderboardView === 'DAILY'
+                    ? `Ez dago ${selectedDailyLeaderboardDay + 1}. eguneko emaitzarik oraindik.`
+                    : 'Oraindik ez dago rankingerako daturik.'}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {visibleRanking.map((entry, idx) => (
+                  <article
+                    key={`${leaderboardView}-${entry.playerName}`}
+                    className="flex items-center justify-between rounded-xl border border-gray-100 px-3 py-2.5"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span
+                        className={`w-9 h-9 rounded-lg flex items-center justify-center text-xs font-black ${
+                          idx === 0
+                            ? 'bg-yellow-100 text-yellow-700'
+                            : idx === 1
+                              ? 'bg-slate-200 text-slate-700'
+                              : idx === 2
+                                ? 'bg-amber-100 text-amber-700'
+                                : 'bg-gray-100 text-gray-500'
+                        }`}
+                      >
+                        {idx + 1}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-sm font-black text-gray-800 truncate">{entry.playerName}</p>
+                        {leaderboardView === 'GENERAL' && (
+                          <p className="text-[10px] font-bold uppercase text-gray-400">{entry.games} saio</p>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                  <p className="text-base font-black text-pink-600">{entry.points} pt</p>
-                </article>
-              ))}
-            </div>
-          )}
+                    <p className="text-base font-black text-pink-600">{entry.points} pt</p>
+                  </article>
+                ))}
+
+                {currentPlayerRankEntry && (
+                  <article className="mt-4 rounded-xl border border-pink-200 bg-pink-50 px-3 py-2.5">
+                    <p className="text-[10px] font-black uppercase tracking-wide text-pink-600 mb-1">
+                      Zure posizioa
+                    </p>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="w-9 h-9 rounded-lg bg-pink-100 text-pink-700 flex items-center justify-center text-xs font-black">
+                          {currentPlayerRankIndex + 1}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="text-sm font-black text-gray-800 truncate">
+                            {currentPlayerRankEntry.playerName}
+                          </p>
+                          {leaderboardView === 'GENERAL' && (
+                            <p className="text-[10px] font-bold uppercase text-gray-400">
+                              {currentPlayerRankEntry.games} saio
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <p className="text-base font-black text-pink-600">
+                        {currentPlayerRankEntry.points} pt
+                      </p>
+                    </div>
+                  </article>
+                )}
+              </div>
+            )}
+          </div>
         </div>
-      </div>
-    </section>
-  )
+      </section>
+    );
+  }
 );
 
 RankingPanel.displayName = 'RankingPanel';
@@ -465,7 +508,8 @@ const HomeScreen: React.FC<HomeScreenProps> = React.memo(
     onLeaderboardViewChange,
     selectedDailyLeaderboardDay,
     onSelectedDailyLeaderboardDayChange,
-    activeRanking
+    activeRanking,
+    currentPlayerName
   }) => (
     <div className="flex-1 flex flex-col items-center justify-start space-y-4 sm:space-y-5 animate-in fade-in zoom-in-95 duration-500 pt-2 sm:pt-3 pb-5 sm:pb-6 overflow-y-auto">
       <div className="w-full flex flex-col items-center space-y-4">
@@ -517,6 +561,7 @@ const HomeScreen: React.FC<HomeScreenProps> = React.memo(
         onSelectedDailyLeaderboardDayChange={onSelectedDailyLeaderboardDayChange}
         dayOptions={dayOptions}
         activeRanking={activeRanking}
+        currentPlayerName={currentPlayerName}
       />
     </div>
   )
